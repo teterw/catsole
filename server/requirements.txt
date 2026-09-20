@@ -1,0 +1,15 @@
+pyserial>=3.5
+requests>=2.31
+psutil>=5.9
+flask>=3.0
+
+# SMTC access. The older "winsdk" package has no wheel for Python 3.13 and
+# tries to build from source (needs Visual Studio); these split packages are
+# its maintained successor and ship 3.13 wheels.
+winrt-runtime>=2.0
+winrt-Windows.Media.Control>=2.0
+winrt-Windows.Media>=2.0
+winrt-Windows.Foundation>=2.0
+winrt-Windows.Storage.Streams>=2.0
+
+pytest>=8.0
