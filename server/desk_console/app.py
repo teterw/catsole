@@ -2,7 +2,7 @@
 
 All content decisions live here rather than on the microcontroller. The
 device is a renderer: it receives finished strings and numbers, and owns
-only animation, link state and tap classification.
+only animation and link state.
 
 Lyrics are fetched on a worker thread. An lrclib call takes a few hundred
 milliseconds on a good day and can hang until timeout on a bad one; doing
@@ -24,15 +24,6 @@ from .media import MediaReader, NowPlaying
 log = logging.getLogger(__name__)
 
 MODES = ("lyrics", "stats")
-
-
-def next_mode(current: str) -> str:
-    """Advance to the next mode, recovering to the first on anything odd."""
-    try:
-        index = MODES.index(current)
-    except ValueError:
-        return MODES[0]
-    return MODES[(index + 1) % len(MODES)]
 
 
 class DeskConsole:
@@ -63,8 +54,6 @@ class DeskConsole:
         self.stats: dict = empty_stats()
         self.lyrics = Lyrics(kind="none")
         self.refresh_requested = False
-        self.last_uid = ""
-        self.last_tap_kind = ""
         self.device_firmware = ""
 
         self._track_key = None
@@ -78,30 +67,24 @@ class DeskConsole:
     # ---- events from the device -----------------------------------------
 
     def handle_event(self, event: dict) -> None:
-        """Handle one inbound event from the device."""
-        kind = event.get("t")
+        """Handle one inbound event from the device.
 
-        if kind == "tap":
-            tap = event.get("kind", "short")
-            self.last_uid = event.get("uid", "")
-            self.last_tap_kind = tap
-            if tap == "hold":
-                log.info("hold from tag %s: forcing refresh", self.last_uid or "?")
-                self.force_refresh()
-            else:
-                self.set_mode(next_mode(self.mode))
-                log.info("tap from tag %s: mode -> %s", self.last_uid or "?", self.mode)
+        The device is display-only, so the one thing it ever sends is its
+        boot announcement. Anything else is ignored rather than trusted.
+        """
+        if event.get("t") != "hello":
+            return
 
-        elif kind == "hello":
-            self.device_firmware = str(event.get("fw", ""))
-            log.info("device announced firmware %s", self.device_firmware)
-            self.push_frame()
+        self.device_firmware = str(event.get("fw", ""))
+        log.info("device announced firmware %s", self.device_firmware)
+        # Answer immediately so the display leaves its waiting state.
+        self.push_frame()
 
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
             return
         self.mode = mode
-        self.push_frame()  # Respond to the tap now, not on the next tick.
+        self.push_frame()  # Reflect the change now, not on the next tick.
 
     def force_refresh(self) -> None:
         self.refresh_requested = True
@@ -310,6 +293,5 @@ class DeskConsole:
             },
             "lyrics_kind": self.lyrics.kind,
             "stats": self.stats,
-            "last_tag": {"uid": self.last_uid, "kind": self.last_tap_kind},
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
         }

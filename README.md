@@ -1,9 +1,8 @@
 # desk-console
 
-A USB-tethered desk display. An Arduino UNO R4 WiFi drives a 128×64 OLED and
-reads NFC taps; a Python service on the PC feeds it either the current synced
-lyric line or live hardware stats. Tap a tag to change mode, hold it to force
-a refresh.
+A USB-tethered desk display. An Arduino UNO R4 WiFi drives a 128×64 OLED, and
+a Python service on the PC feeds it either the current synced lyric line or
+live hardware stats. Modes are switched from a small local web page.
 
 No WiFi is used. The board supports it; this project does not. Everything
 goes over USB serial.
@@ -14,9 +13,16 @@ goes over USB serial.
 |---|---|---|
 | Arduino UNO R4 WiFi | USB CDC | permanently tethered to the PC |
 | SSD1309 128×64 OLED | hardware SPI | monochrome |
-| Elechouse PN532 NFC/RFID | I2C | onboard switch set to **I2C mode**, 4-pin header |
 
-No buzzer, no other sensors.
+That's the whole parts list. No buzzer, no sensors, no reader.
+
+> An NFC tag reader was part of the original design — tapping a card would
+> cycle modes. It was removed after the module turned out not to work: it
+> answered on the I²C bus at an address no PN532 uses (0x40 rather than
+> 0x24), accepted commands without ever replying, and never responded over
+> UART in either wiring orientation. Mode switching lives in the web panel
+> instead. The reader code is recoverable from git history if the hardware
+> is ever replaced.
 
 ## Wiring
 
@@ -30,57 +36,57 @@ No buzzer, no other sensors.
 | VCC | 3.3V or 5V, per your module |
 | GND | GND |
 
-| PN532 pin | Arduino pin |
-|---|---|
-| VCC | 5V |
-| GND | GND |
-| SDA | SDA |
-| SCL | SCL |
-
-The PN532's DIP switches must be set to I2C. The 4-pin header has the pull-up
-resistors on board, so no external ones are needed.
-
 ## Firmware setup
 
-Three libraries. Two come from Library Manager:
+Two libraries, both from Library Manager:
 
 - **U8g2** (tested against 2.35.30)
 - **ArduinoJson** (tested against 7.4.2 — the v7 API, not v6)
 
-The third does not. The Elechouse PN532 library is not in Library Manager and
-has to be installed by hand, as **two** folders:
+Open `arduino/desk_console/desk_console.ino` and upload, selecting **Arduino
+UNO R4 WiFi** as the board.
 
-```bash
-git clone --depth 1 https://github.com/elechouse/PN532.git
-# copy both of these into your sketchbook libraries folder,
-# e.g. C:\Users\<you>\Documents\Arduino\libraries\
-#   PN532\
-#   PN532_I2C\
+### SPI bus speed
+
+The sketch clocks the display at **1MHz**, well below the R4's default:
+
+```c
+static const uint32_t DISPLAY_BUS_HZ = 1000000;
 ```
 
-Then open `arduino/desk_console/desk_console.ino` and upload, selecting
-**Arduino UNO R4 WiFi** as the board.
+This is not arbitrary. At the default speed on this build, initialisation
+commands arrived corrupted — the panel came up inverted about half the time —
+and the display dropped its state a few seconds after each init while the
+microcontroller carried on fine. 1MHz fixed it completely, and a 1KB frame
+buffer at 30fps only needs around 250kbit/s, so nothing is lost.
+
+If your wiring is short and tidy, 2MHz and then 4MHz are worth trying. The
+symptoms of running too fast are an upside-down image, or a panel that blanks
+and needs a reset.
 
 ### If the display looks wrong
 
-SSD1309 panels ship with two common init sequences, and the module does not
-report which one it wants. The sketch has both behind one define at the top:
+SSD1309 panels ship with two common init sequences and the module does not
+report which one it wants. Both are in the sketch behind one define:
 
 ```c
 #define DISPLAY_VARIANT 0   // try 1 if the display looks wrong
 ```
 
-On boot the sketch runs a self-test: a full-white flash, then a border with a
-checkerboard fill, then an identity card. With the right variant the border is
-crisp against the panel edge, the checkerboard reads as an even grey rather
-than as bands, and the white fill is uniform. If it looks washed out, shifted
-by a few columns, or inverted, change the define to `1` and re-upload.
+On this build, variant **0** is correct. On boot the sketch runs a self-test —
+a full-white flash, then a border with a checkerboard fill, then an identity
+card. With the right variant the border is crisp against the panel edge, the
+checkerboard reads as an even grey rather than as bands, and the white fill is
+uniform. If it looks washed out, shifted by a few columns, or inverted, change
+the define to `1` and re-upload.
 
 A **completely blank** screen is not this setting — check wiring and the RES
 pin first.
 
-The identity card also reports whether the PN532 answered, which is the
-quickest way to tell an I2C wiring problem from a library problem.
+`arduino/oled_probe/` is a throwaway diagnostic that cycles through candidate
+controller profiles and SPI bus speeds with a heartbeat counter, driven by
+single-character serial commands. It is how the two settings above were
+determined, and it is kept for the next time a panel misbehaves.
 
 ## PC setup
 
@@ -119,7 +125,8 @@ rather than `winsdk.windows.media.control`.
 **Lyrics** — artist and title in the top strip, marqueed when too long for the
 panel, with the current synced lyric line below and a cosmetic equalizer along
 the bottom. There is no microphone on this build, so the bars are animated
-rather than audio-reactive.
+rather than audio-reactive. Long lines wrap and step down through three font
+sizes so they fit rather than being cut off.
 
 Lyrics come from [lrclib.net](https://lrclib.net), which needs no API key.
 When no synced lyrics exist the display falls back to a title card rather than
@@ -130,16 +137,8 @@ under `server/cache/`, which is gitignored.
 Any reading that is unavailable shows as `--` for that field alone; one dead
 sensor never blanks the mode.
 
-## Tap behaviour
-
-| Gesture | Action |
-|---|---|
-| Short tap | next mode |
-| Hold ~1.5s | force an immediate refresh |
-
-Any tag works — the UID is reported to the PC and shown in the control panel,
-but nothing branches on it. While a tag is held, a bar fills across the top of
-the display and the action fires the moment it completes.
+Switch between them with the buttons on the control panel. `refresh now`
+forces an immediate re-poll rather than waiting for the next interval.
 
 ## When the PC goes away
 
@@ -189,9 +188,9 @@ Because `pythonw` has no console, logs go to
 
 ## Protocol
 
-Newline-delimited JSON in both directions at 115200 baud. Unparseable lines
-are dropped rather than resynchronised — a dropped frame is invisible at 4Hz,
-a desynchronised parser is not.
+Newline-delimited JSON at 115200 baud. Unparseable lines are dropped rather
+than resynchronised — a dropped frame is invisible at 4Hz, a desynchronised
+parser is not.
 
 PC to device:
 
@@ -200,12 +199,11 @@ PC to device:
 {"t":"frame","mode":"stats","cpu":{"temp":61,"load":34,"clock":4850},"gpu":{"temp":68,"load":99,"vram_used":4211,"vram_total":8188}}
 ```
 
-Device to PC:
+Device to PC — just the one message, sent at boot and repeated until the PC
+answers:
 
 ```json
 {"t":"hello","fw":"1.0.0","variant":0}
-{"t":"tap","uid":"04A2B3C4","kind":"short"}
-{"t":"tap","uid":"04A2B3C4","kind":"hold"}
 ```
 
 `hold_ms` tells the device how long the current lyric line stays valid, so it
@@ -219,8 +217,8 @@ the OLED fonts do not carry the full Unicode range.
 power. This is not the `DISPLAY_VARIANT` setting — a wrong variant produces a
 poor image, not no image.
 
-**Display works, `pn532 not found` on the boot card.** The DIP switches are
-not in I2C mode, or SDA/SCL are swapped.
+**The image is upside down, or the panel blanks after a few seconds.** The SPI
+bus is running faster than the wiring can carry. Lower `DISPLAY_BUS_HZ`.
 
 **Lyrics mode shows the title instead of lyrics.** No synced lyrics exist for
 that track on lrclib, or the track's reported duration is too far from any
@@ -236,17 +234,17 @@ whether Windows itself shows it in the volume flyout's media control.
 **CPU temp is `--`.** LibreHardwareMonitor is not running elevated with its
 web server on. See above.
 
-**Control panel is empty but the service is running.** The panel polls
-`/api/state`; if the service died, the preview dims exactly as the device
-does. Check the log file.
+**Upload fails with "serial port busy".** The service is holding the port.
+Stop it before flashing.
 
 ## Layout
 
 ```
 arduino/desk_console/   firmware
+arduino/oled_probe/     display diagnostic sketch
 server/                 PC service, tests, autostart script
 docs/superpowers/       design spec and implementation plan
 ```
 
 Tests: `cd server && python -m pytest`. They cover the parsing and
-state-machine seams and need neither the board nor the network.
+frame-shaping seams and need neither the board nor the network.

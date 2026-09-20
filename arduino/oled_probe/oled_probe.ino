@@ -23,10 +23,7 @@
 
 #include <Arduino.h>
 #include <SPI.h>
-#include <Wire.h>
 #include <U8g2lib.h>
-#include <PN532_I2C.h>
-#include <PN532.h>
 
 #define PIN_CS 10
 #define PIN_DC 9
@@ -50,9 +47,6 @@ const uint8_t BUS_COUNT = 5;
 /* Start slow. If this is rock solid, step back up to find the ceiling. */
 static uint8_t busIndex = 3;
 
-PN532_I2C pn532i2c(Wire);
-PN532 nfc(pn532i2c);
-
 static const uint16_t REDRAW_MS = 250;
 static const uint32_t REINIT_MS = 2000;
 
@@ -61,8 +55,6 @@ static uint32_t heartbeat = 0;
 static uint32_t lastRedraw = 0;
 static uint32_t lastReinit = 0;
 static bool autoReinit = false;
-static bool nfcFound = false;
-static uint32_t nfcVersion = 0;
 
 static void report(const char *event) {
   Serial.print(F("{\"t\":\""));
@@ -77,8 +69,6 @@ static void report(const char *event) {
   Serial.print(autoReinit ? F("true") : F("false"));
   Serial.print(F(",\"beats\":"));
   Serial.print(heartbeat);
-  Serial.print(F(",\"pn532\":"));
-  Serial.print(nfcFound ? F("true") : F("false"));
   Serial.println(F("}"));
 }
 
@@ -168,12 +158,6 @@ void setup() {
   pinMode(PIN_CS, OUTPUT);
   pinMode(PIN_DC, OUTPUT);
   pinMode(PIN_RES, OUTPUT);
-
-  Wire.begin();
-  nfc.begin();
-  nfcVersion = nfc.getFirmwareVersion();
-  nfcFound = (nfcVersion != 0);
-  if (nfcFound) nfc.SAMConfig();
 
   current = 0;
   initPanel();

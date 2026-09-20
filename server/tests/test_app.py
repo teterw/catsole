@@ -1,4 +1,4 @@
-"""Tests for the mode state machine and frame shaping.
+"""Tests for mode selection and frame shaping.
 
 All dependencies are stubbed, so these run with no board, no network and
 no media session. Lyric fixtures are invented placeholder text.
@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from desk_console.app import MODES, DeskConsole, next_mode
+from desk_console.app import MODES, DeskConsole
 from desk_console.config import Config
 from desk_console.link import NullLink
 from desk_console.lyrics import Lyrics
@@ -68,43 +68,36 @@ def console(tmp_path):
     )
 
 
-def test_next_mode_cycles_and_wraps():
-    assert next_mode("lyrics") == "stats"
-    assert next_mode("stats") == "lyrics"
-
-
-def test_next_mode_recovers_from_unknown():
-    assert next_mode("bogus") == MODES[0]
-
-
-def test_short_tap_advances_mode(console):
-    console.mode = "lyrics"
-    console.handle_event({"t": "tap", "kind": "short"})
+def test_set_mode_switches(console):
+    console.set_mode("stats")
     assert console.mode == "stats"
 
 
-def test_short_tap_twice_returns_to_start(console):
-    console.handle_event({"t": "tap", "kind": "short"})
-    console.handle_event({"t": "tap", "kind": "short"})
+def test_set_mode_ignores_unknown_mode(console):
+    console.set_mode("lyrics")
+    console.set_mode("bogus")
     assert console.mode == "lyrics"
 
 
-def test_hold_forces_refresh_without_changing_mode(console):
+def test_force_refresh_flags_without_changing_mode(console):
     console.mode = "stats"
-    console.handle_event({"t": "tap", "kind": "hold"})
+    console.force_refresh()
     assert console.mode == "stats"
     assert console.refresh_requested is True
 
 
-def test_tap_records_last_tag_uid(console):
-    console.handle_event({"t": "tap", "kind": "short", "uid": "04A2B3C4"})
-    assert console.last_uid == "04A2B3C4"
+def test_hello_records_firmware_and_answers(console):
+    console.handle_event({"t": "hello", "fw": "1.0.0", "variant": 0})
+    assert console.device_firmware == "1.0.0"
+    # The reply is what lets the display leave its waiting state.
+    assert console.link.frames
 
 
-def test_unknown_event_is_ignored(console):
+def test_non_hello_events_are_ignored(console):
     console.handle_event({"t": "somethingelse"})
     console.handle_event({})
     assert console.mode == "lyrics"
+    assert console.device_firmware == ""
 
 
 def test_stats_frame_passes_none_through_for_missing_fields(console):

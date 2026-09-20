@@ -168,10 +168,9 @@
     <dt>lyrics</dt><dd id="v-lyr" class="muted">--</dd>
     <dt>cpu</dt><dd id="v-cpu" class="muted">--</dd>
     <dt>gpu</dt><dd id="v-gpu" class="muted">--</dd>
-    <dt>last tag</dt><dd id="v-tag" class="muted">none</dd>
   </dl>
 
-  <p class="note" id="note">Tap a tag to change mode. Hold it to refresh.</p>
+  <p class="note" id="note">Switch modes with the buttons above.</p>
 
 </div>
 
@@ -406,12 +405,8 @@
         ? (gpu.vram_used / 1024).toFixed(1) + "/" + (gpu.vram_total / 1024).toFixed(1) + " GB"
         : "--"), false);
 
-    setText("v-tag", data.last_tag && data.last_tag.uid
-      ? data.last_tag.uid + "  " + data.last_tag.kind
-      : "none yet", !(data.last_tag && data.last_tag.uid));
-
     document.getElementById("note").textContent = connected
-      ? (data.lhm ? "Tap a tag to change mode. Hold it to refresh."
+      ? (data.lhm ? "Switch modes with the buttons above."
                   : "CPU temperature needs LibreHardwareMonitor running. Everything else is live.")
       : "No device on any port. Check the cable, or start the service with --no-serial.";
   }

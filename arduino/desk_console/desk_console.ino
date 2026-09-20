@@ -1,9 +1,9 @@
 ﻿/*
  * desk-console firmware
- * Arduino UNO R4 WiFi + SSD1309 128x64 OLED (hardware SPI) + PN532 (I2C)
+ * Arduino UNO R4 WiFi + SSD1309 128x64 OLED (hardware SPI)
  *
- * This board is a renderer, not a decision-maker. It owns animation, link
- * state and tap classification. Everything about what to show -- track
+ * This board is a renderer, not a decision-maker. It owns animation and
+ * link state. Everything about what to show -- track
  * metadata, lyric timing, sensor values -- arrives from the PC as finished
  * strings and numbers over USB CDC.
  *
@@ -13,17 +13,13 @@
  *   in   {"t":"frame","mode":"lyrics","meta":"...","main":"...","hold_ms":3200,"eq":1,"state":"playing","lyr":"synced"}
  *        {"t":"frame","mode":"stats","cpu":{...},"gpu":{...}}
  *        {"t":"ping"}
- *   out  {"t":"hello","fw":"1.0.0"}
- *        {"t":"tap","uid":"04A2B3C4","kind":"short"|"hold"}
+ *   out  {"t":"hello","fw":"1.0.0","variant":0}
  */
 
 #include <Arduino.h>
 #include <SPI.h>
-#include <Wire.h>
 #include <U8g2lib.h>
 #include <ArduinoJson.h>
-#include <PN532_I2C.h>
-#include <PN532.h>
 
 #define FIRMWARE_VERSION "1.0.0"
 
@@ -66,16 +62,10 @@ U8G2_SSD1309_128X64_NONAME2_F_4W_HW_SPI u8g2(U8G2_R0, PIN_CS, PIN_DC, PIN_RES);
  */
 static const uint32_t DISPLAY_BUS_HZ = 1000000;
 
-PN532_I2C pn532i2c(Wire);
-PN532 nfc(pn532i2c);
-
 /* ---- timing ------------------------------------------------------- */
 static const uint16_t FRAME_INTERVAL_MS = 33;   /* ~30fps */
 static const uint32_t STALE_AFTER_MS = 4000;    /* link considered dead */
 static const uint32_t HELLO_INTERVAL_MS = 1500; /* until first frame lands */
-static const uint16_t HOLD_THRESHOLD_MS = 1500;
-static const uint16_t NFC_TIMEOUT_MS = 50;      /* short: the loop must keep drawing */
-static const uint8_t NFC_MISS_LIMIT = 3;        /* debounce flaky reads */
 
 /* ---- screen geometry ---------------------------------------------- */
 static const uint8_t SCREEN_W = 128;
@@ -116,16 +106,6 @@ static uint32_t lastMarqueeMs = 0;
 static float eqHeight[EQ_BARS];
 static uint16_t eqPhase[EQ_BARS];
 
-/* ---- NFC ------------------------------------------------------------ */
-static bool nfcReady = false;
-static bool tagPresent = false;
-static bool holdFired = false;
-static uint8_t missCount = 0;
-static uint32_t tagSinceMs = 0;
-static uint32_t lastNfcPollMs = 0;
-static uint32_t lastNfcRetryMs = 0;
-static char tagUid[21] = {0};
-
 /* ---- serial receive -------------------------------------------------- */
 static char rxBuf[640];
 static uint16_t rxLen = 0;
@@ -153,35 +133,8 @@ static void copyField(char *dest, size_t size, const char *src) {
   dest[size - 1] = 0;
 }
 
-/* Probe the I2C bus and list what answered.
- *
- * Reported in the hello frame so a reader that is not responding can be
- * told apart from one that is wired to the wrong pins: an empty list
- * means nothing is on the bus at all, whereas a device at an unexpected
- * address means it is alive but not in the mode we expect. The PN532
- * answers at 0x24 when its switches are set to I2C. */
-static void scanI2C(char *out, size_t size) {
-  size_t pos = 0;
-  out[0] = 0;
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0 && pos + 7 < size) {
-      pos += snprintf(out + pos, size - pos, "%s\"0x%02X\"", pos ? "," : "",
-                      addr);
-    }
-  }
-}
-
 /* Try to bring the reader up. Called at boot and retried while it is
    absent, so fixing the wiring does not require a re-flash. */
-static bool initNfc() {
-  uint32_t version = nfc.getFirmwareVersion();
-  if (!version) return false;
-  /* SAMConfig is mandatory: without it reads fail silently forever. */
-  nfc.SAMConfig();
-  return true;
-}
-
 /* Format a float that may be absent. */
 static void fmtNum(char *out, size_t n, float value, uint8_t decimals,
                    const char *suffix) {
@@ -199,35 +152,11 @@ static void fmtNum(char *out, size_t n, float value, uint8_t decimals,
  * ==================================================================== */
 
 static void sendHello() {
-  /* Deliberately cheap: this runs every 1.5s until the PC answers, so it
-     must not touch the I2C bus. Probing a bus with nothing on it costs
-     roughly a hundred milliseconds per address, and scanning all of them
-     here once stretched this message's interval from 1.5s to 12s. The
-     full scan is available on demand instead, via the "scan" command. */
   Serial.print(F("{\"t\":\"hello\",\"fw\":\""));
   Serial.print(F(FIRMWARE_VERSION));
   Serial.print(F("\",\"variant\":"));
   Serial.print(DISPLAY_VARIANT);
-  Serial.print(F(",\"nfc\":"));
-  Serial.print(nfcReady ? F("true") : F("false"));
   Serial.println(F("}"));
-}
-
-/* Full bus scan, on request only. Slow when the bus is empty. */
-static void sendScan() {
-  char devices[64];
-  scanI2C(devices, sizeof(devices));
-  Serial.print(F("{\"t\":\"i2c\",\"devices\":["));
-  Serial.print(devices);
-  Serial.println(F("]}"));
-}
-
-static void sendTap(const char *uid, const char *kind) {
-  Serial.print(F("{\"t\":\"tap\",\"uid\":\""));
-  Serial.print(uid);
-  Serial.print(F("\",\"kind\":\""));
-  Serial.print(kind);
-  Serial.println(F("\"}"));
 }
 
 /* ==================================================================== *
@@ -246,11 +175,6 @@ static void handleLine(const char *line) {
   if (strcmp(type, "ping") == 0) {
     lastFrameMs = millis();
     everReceived = true;
-    return;
-  }
-
-  if (strcmp(type, "scan") == 0) {
-    sendScan();
     return;
   }
 
@@ -295,61 +219,6 @@ static void pollSerial() {
       rxOverflow = true;
     }
   }
-}
-
-/* ==================================================================== *
- * NFC
- * ==================================================================== */
-
-static void uidToHex(const uint8_t *uid, uint8_t len, char *out, size_t size) {
-  size_t pos = 0;
-  for (uint8_t i = 0; i < len && pos + 2 < size; i++) {
-    static const char digits[] = "0123456789ABCDEF";
-    out[pos++] = digits[(uid[i] >> 4) & 0x0F];
-    out[pos++] = digits[uid[i] & 0x0F];
-  }
-  out[pos] = 0;
-}
-
-static void pollNfc() {
-  if (!nfcReady) return;
-
-  uint8_t uid[7] = {0};
-  uint8_t uidLen = 0;
-
-  /* This call blocks for its whole timeout, which is why the timeout is
-     short: the marquee and equalizer must keep moving. */
-  bool found = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen,
-                                       NFC_TIMEOUT_MS);
-
-  if (found && uidLen > 0) {
-    missCount = 0;
-    if (!tagPresent) {
-      tagPresent = true;
-      holdFired = false;
-      tagSinceMs = millis();
-      uidToHex(uid, uidLen, tagUid, sizeof(tagUid));
-    }
-    /* Fire the hold while the tag is still down, so the feedback ring
-       completing and the action happening are the same moment. */
-    if (!holdFired && (millis() - tagSinceMs) >= HOLD_THRESHOLD_MS) {
-      holdFired = true;
-      sendTap(tagUid, "hold");
-    }
-    return;
-  }
-
-  if (!tagPresent) return;
-
-  /* PN532 reads drop out intermittently while a tag is still resting on
-     the coil, so require several consecutive misses before calling it a
-     release. */
-  if (++missCount < NFC_MISS_LIMIT) return;
-
-  tagPresent = false;
-  missCount = 0;
-  if (!holdFired) sendTap(tagUid, "short");
-  holdFired = false;
 }
 
 /* ==================================================================== *
@@ -539,14 +408,6 @@ static void drawEqualizer(bool active) {
   }
 }
 
-static void drawHoldRing() {
-  if (!tagPresent || holdFired) return;
-  uint32_t held = millis() - tagSinceMs;
-  if (held > HOLD_THRESHOLD_MS) held = HOLD_THRESHOLD_MS;
-  uint8_t width = (uint8_t)((held * (SCREEN_W - 4)) / HOLD_THRESHOLD_MS);
-  u8g2.drawBox(2, 0, width, 2);
-}
-
 static void drawLyrics() {
   u8g2.setFont(u8g2_font_5x7_tf);
   drawMarquee(frame.meta, META_BASELINE, SCREEN_W - 4);
@@ -692,7 +553,6 @@ static void render() {
     drawStaleBadge();
   }
 
-  drawHoldRing();
   u8g2.sendBuffer();
 }
 
@@ -725,7 +585,6 @@ static void selfTest() {
   snprintf(line, sizeof(line), "fw %s  variant %d", FIRMWARE_VERSION,
            DISPLAY_VARIANT);
   u8g2.drawUTF8(2, 34, line);
-  u8g2.drawUTF8(2, 46, nfcReady ? "pn532 ready" : "pn532 not found");
   u8g2.sendBuffer();
   delay(900);
 }
@@ -748,10 +607,6 @@ void setup() {
   u8g2.begin();
   u8g2.setFontMode(1);
   u8g2.enableUTF8Print();
-
-  Wire.begin();
-  nfc.begin();
-  nfcReady = initNfc();
 
   selfTest();
 
@@ -779,26 +634,6 @@ void loop() {
     linkState = LINK_STALE;
   } else {
     linkState = LINK_LIVE;
-  }
-
-  /* Keep trying to find the reader while it is absent. Re-powering the
-     module after changing its mode switches should be enough to bring
-     taps to life without touching the firmware. */
-  /* Ten seconds, not three: each attempt stalls for the library's ACK
-     timeout while the reader is absent, and that pause is visible in the
-     animation. */
-  if (!nfcReady && now - lastNfcRetryMs >= 10000) {
-    nfc.begin();
-    nfcReady = initNfc();
-    lastNfcRetryMs = millis();
-    if (nfcReady) sendHello();  /* Tell the PC the reader just appeared. */
-  }
-
-  /* Poll the reader between frames rather than every pass, so its blocking
-     timeout cannot dominate the frame budget. */
-  if (nfcReady && now - lastNfcPollMs >= 100) {
-    pollNfc();
-    lastNfcPollMs = millis();
   }
 
   if (now - lastMarqueeMs >= 40) {

@@ -1,11 +1,12 @@
 # desk-console — Design
 
 **Date:** 2026-09-20
-**Status:** Approved, implementing
+**Status:** Built and running. Amended 2026-09-21: the NFC reader was
+removed from the project (see *Amendment* at the end).
 
 A USB-tethered desk display: an Arduino UNO R4 WiFi drives an SSD1309 OLED
-and reads NFC taps, while a Python process on the Windows PC feeds it
-now-playing lyrics or live hardware stats over Serial.
+while a Python process on the Windows PC feeds it now-playing lyrics or
+live hardware stats over Serial.
 
 ## Hardware (fixed — not up for revision)
 
@@ -13,9 +14,9 @@ now-playing lyrics or live hardware stats over Serial.
 |---|---|---|
 | Arduino UNO R4 WiFi | USB CDC to PC | permanently tethered, COM3 |
 | SSD1309 128x64 OLED | Hardware SPI | CS=10, DC=9, RES=8, SCK=13, MOSI=11 |
-| Elechouse PN532 | I2C (onboard switch in I2C mode) | VCC/GND/SDA/SCL 4-pin header |
 
-No buzzer, no other sensors. **No WiFi is used anywhere in this project**
+No buzzer, no other sensors, and as built no NFC reader. **No WiFi is
+used anywhere in this project**
 despite the board supporting it — all PC communication is Serial over USB.
 
 Board confirmed present at `USB\VID_2341&PID_1002`, serial `F0F5BD560764`,
@@ -35,19 +36,18 @@ CDC interface on COM3.
 ## Architecture
 
 ```
-  PN532 --I2C--+
-               +-- UNO R4 --USB CDC (NDJSON)-- Python --+-- winsdk (SMTC)
-  SSD1309 -SPI-+                                        +-- lrclib.net HTTP
-                                                        +-- LHM :8085 / nvidia-smi / psutil
-                                                        +-- Flask 127.0.0.1:8730
+  SSD1309 -SPI-- UNO R4 --USB CDC (NDJSON)-- Python --+-- winrt (SMTC)
+                                                      +-- lrclib.net HTTP
+                                                      +-- LHM :8085 / nvidia-smi / psutil
+                                                      +-- Flask 127.0.0.1:8730
 ```
 
 ### Division of responsibility
 
 The Arduino is a **renderer, not a decision-maker**. It owns animation
-(marquee, equalizer, hold ring), link-state detection, and tap
-classification. It owns no content logic: it does not parse LRC files,
-has no concept of a track, and does not decide what a mode means.
+(marquee, equalizer) and link-state detection. It owns no content logic:
+it does not parse LRC files, has no concept of a track, and does not
+decide what a mode means.
 
 The PC owns all content and timing. This keeps the fiddly parts — lyric
 sync math, API fallbacks, sensor degradation — in Python where they are
@@ -81,9 +81,7 @@ Unparseable lines are dropped by both sides rather than resynchronised.
 
 **Device to PC**
 
-    {"t":"hello","fw":"1.0.0"}
-    {"t":"tap","uid":"04A2B3C4","kind":"short"}
-    {"t":"tap","uid":"04A2B3C4","kind":"hold"}
+    {"t":"hello","fw":"1.0.0","variant":0}
 
 All device-bound text is ASCII-folded on the PC (NFKD decomposition plus
 smart-quote and dash substitution) because the OLED font set does not
@@ -100,9 +98,8 @@ carry the full Unicode range.
    are unavailable render as `--` individually rather than blanking the
    whole mode.
 
-Short tap cycles modes. Long hold (1.5s or more) forces an immediate
-re-poll of both media and hardware sources. Tag UID is reported and
-logged but does not alter behaviour; any tag acts as a generic tap.
+Modes are switched from the control panel, which also exposes an
+immediate re-poll. The device itself has no input.
 
 ## Display states
 
@@ -123,7 +120,7 @@ One entry point, `server/run.py`, over focused modules:
 
 | Module | Responsibility | Depends on |
 |---|---|---|
-| `media.py` | SMTC session, metadata, extrapolated position | winsdk |
+| `media.py` | SMTC session, metadata, extrapolated position | winrt |
 | `lyrics.py` | lrclib fetch, LRC parse, disk cache, fallback chain | requests |
 | `hardware.py` | LHM, then nvidia-smi, then psutil; per-field degradation | requests, psutil |
 | `link.py` | serial transport, VID/PID autodetect, reconnect | pyserial |
@@ -176,10 +173,45 @@ bundled.
   define, and a boot self-test pattern makes the correct choice obvious
   on first upload. A wrong choice looks washed out or column-shifted,
   not blank.
-- **PN532 library.** The Elechouse library is not in the Library Manager
-  and installs as two folders manually. `SAMConfig()` after `begin()` is
-  mandatory or reads fail silently. `readPassiveTargetID` blocks for its
-  full timeout, so it is polled at ~50ms to keep animation alive.
+
 - **SMTC app variance.** Not every player reports position, or reports it
   honestly. The fallback chain degrades to a static title/artist card
   rather than showing a wrong line.
+
+## Amendment, 2026-09-21
+
+The NFC reader was removed from the project after it could not be made to
+work. What the hardware actually did:
+
+- Nothing ever answered on I2C at 0x24, the only address a PN532 uses and
+  the only one the Elechouse library addresses.
+- A device did answer consistently at **0x40**, and it was demonstrably the
+  module: both bus lines idled high while it was connected and went low the
+  moment it was unplugged, so its pull-ups were present and it was powered.
+- That device accepted a full nine-byte PN532 `GetFirmwareVersion` frame
+  without complaint and never replied to it.
+- Over UART on `Serial1`, it was not found in either wiring orientation.
+
+A part that acknowledges its address, accepts commands, answers at an
+address its chip cannot use, and never replies is not the device the design
+assumed. Rather than keep a mode the hardware could not support, taps were
+dropped and mode switching moved entirely to the control panel.
+
+Consequences for this design:
+
+- The parts list is the board and the OLED.
+- The device is display-only. The protocol is now one-way in practice: the
+  only thing it sends is its boot `hello`.
+- The long-hold "force refresh" gesture is gone; the panel's refresh button
+  covers the same need.
+
+The reader code is in git history if the hardware is ever replaced.
+
+Two hardware findings from the build are worth keeping:
+
+- **The display SPI bus must be clocked slowly** (1MHz). At the R4's default
+  speed, init commands arrived corrupted, so the panel came up inverted
+  about half the time and dropped its state seconds after each init while
+  the MCU ran on unaffected.
+- **`DISPLAY_VARIANT 0` (SSD1309 NONAME0) is correct** for this panel.
+  NONAME2 and SH1106 both wrap columns on it; SSD1306 flickers.
