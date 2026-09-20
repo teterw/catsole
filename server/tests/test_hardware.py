@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from desk_console.hardware import (
+    HardwareReader,
     empty_stats,
     find_sensor,
     flatten_lhm,
@@ -109,8 +110,28 @@ def test_parse_nvidia_smi_keeps_readable_fields_when_one_is_unsupported():
     assert "load" not in got
 
 
-def test_empty_stats_has_both_sections_with_none_fields():
+def test_empty_stats_has_all_sections_with_none_fields():
     stats = empty_stats()
-    assert set(stats) == {"cpu", "gpu"}
+    assert set(stats) == {"cpu", "gpu", "ram"}
     assert stats["cpu"]["temp"] is None
     assert stats["gpu"]["vram_used"] is None
+    assert stats["ram"]["used"] is None
+    assert stats["ram"]["total"] is None
+    assert stats["ram"]["percent"] is None
+
+
+def test_poll_fills_ram_from_psutil():
+    # RAM needs no external tool, so this is safe to assert against the
+    # real machine: it is always available when psutil imports.
+    stats = HardwareReader().poll()
+    ram = stats["ram"]
+    assert ram["total"] > 0
+    assert 0 <= ram["used"] <= ram["total"]
+    assert 0.0 <= ram["percent"] <= 100.0
+
+
+def test_ram_is_reported_in_megabytes():
+    # Same unit as VRAM, so the device formats both the same way.
+    ram = HardwareReader().poll()["ram"]
+    # Any real machine has between 1GB and 1TB of RAM.
+    assert 1024 <= ram["total"] <= 1024 * 1024

@@ -100,6 +100,7 @@ struct Frame {
 
   float cpuTemp, cpuLoad, cpuClock;
   float gpuTemp, gpuLoad, vramUsed, vramTotal;
+  float ramUsed, ramTotal, ramPercent;
 };
 
 static Frame frame;
@@ -134,6 +135,7 @@ static void resetFrame() {
   strcpy(frame.lyr, "none");
   frame.cpuTemp = frame.cpuLoad = frame.cpuClock = NAN;
   frame.gpuTemp = frame.gpuLoad = frame.vramUsed = frame.vramTotal = NAN;
+  frame.ramUsed = frame.ramTotal = frame.ramPercent = NAN;
 }
 
 static void copyField(char *dest, size_t size, const char *src) {
@@ -218,6 +220,9 @@ static void handleLine(const char *line) {
   frame.gpuLoad = doc["gpu"]["load"].isNull() ? NAN : doc["gpu"]["load"].as<float>();
   frame.vramUsed = doc["gpu"]["vram_used"].isNull() ? NAN : doc["gpu"]["vram_used"].as<float>();
   frame.vramTotal = doc["gpu"]["vram_total"].isNull() ? NAN : doc["gpu"]["vram_total"].as<float>();
+  frame.ramUsed = doc["ram"]["used"].isNull() ? NAN : doc["ram"]["used"].as<float>();
+  frame.ramTotal = doc["ram"]["total"].isNull() ? NAN : doc["ram"]["total"].as<float>();
+  frame.ramPercent = doc["ram"]["percent"].isNull() ? NAN : doc["ram"]["percent"].as<float>();
 
   lastFrameMs = millis();
   everReceived = true;
@@ -489,43 +494,28 @@ static void drawLyrics() {
   drawEqualizer(frame.eq == 1 && strcmp(frame.state, "playing") == 0);
 }
 
-static void drawStatRow(uint8_t baseline, const char *label, float temp,
-                        float clockOrVramUsed, float vramTotal, float load,
-                        bool isCpu) {
-  char buf[40];
-  char tempStr[12];
-  char rightStr[20];
+/* Format a used/total pair held in MB as GB, or "--" if either is absent. */
+static void fmtPairGB(char *out, size_t n, float usedMB, float totalMB) {
+  if (isnan(usedMB) || isnan(totalMB)) {
+    snprintf(out, n, "--");
+    return;
+  }
+  char used[10], total[10];
+  dtostrf(usedMB / 1024.0f, 0, 1, used);
+  dtostrf(totalMB / 1024.0f, 0, 1, total);
+  snprintf(out, n, "%s/%sGB", used, total);
+}
 
+/* One labelled row: name, a preformatted value string, and a usage bar. */
+static void drawStatRow(uint8_t baseline, const char *label, const char *value,
+                        float load) {
   u8g2.setFont(u8g2_font_5x7_tf);
   u8g2.drawUTF8(2, baseline, label);
+  u8g2.drawUTF8(24, baseline, value);
 
-  fmtNum(tempStr, sizeof(tempStr), temp, 0, "C");
-
-  if (isCpu) {
-    if (isnan(clockOrVramUsed)) {
-      strcpy(rightStr, "--");
-    } else {
-      char ghz[10];
-      dtostrf(clockOrVramUsed / 1000.0f, 0, 2, ghz);
-      snprintf(rightStr, sizeof(rightStr), "%sGHz", ghz);
-    }
-  } else {
-    if (isnan(clockOrVramUsed) || isnan(vramTotal)) {
-      strcpy(rightStr, "--");
-    } else {
-      char used[10], total[10];
-      dtostrf(clockOrVramUsed / 1024.0f, 0, 1, used);
-      dtostrf(vramTotal / 1024.0f, 0, 1, total);
-      snprintf(rightStr, sizeof(rightStr), "%s/%sGB", used, total);
-    }
-  }
-
-  snprintf(buf, sizeof(buf), "%s  %s", tempStr, rightStr);
-  u8g2.drawUTF8(24, baseline, buf);
-
-  /* Usage bar. An unknown load draws the empty frame, so the row still
-     reads as a row rather than vanishing. */
-  const uint8_t barY = baseline + 3;
+  /* An unknown load still draws the empty frame, so the row reads as a row
+     rather than vanishing. */
+  const uint8_t barY = baseline + 2;
   u8g2.drawFrame(2, barY, SCREEN_W - 4, 6);
   if (!isnan(load)) {
     float pct = load;
@@ -537,13 +527,34 @@ static void drawStatRow(uint8_t baseline, const char *label, float temp,
 }
 
 static void drawStats() {
+  char value[40];
+  char tempStr[12];
+  char pair[20];
+
   u8g2.setFont(u8g2_font_5x7_tf);
   u8g2.drawUTF8(2, META_BASELINE, "system");
   u8g2.drawHLine(0, RULE_Y, SCREEN_W);
 
-  drawStatRow(26, "cpu", frame.cpuTemp, frame.cpuClock, NAN, frame.cpuLoad, true);
-  drawStatRow(48, "gpu", frame.gpuTemp, frame.vramUsed, frame.vramTotal,
-              frame.gpuLoad, false);
+  /* Three rows on a 17px pitch: baselines at 20, 37 and 54 put the last
+     bar at 56..61, just inside the panel. */
+  fmtNum(tempStr, sizeof(tempStr), frame.cpuTemp, 0, "C");
+  if (isnan(frame.cpuClock)) {
+    snprintf(value, sizeof(value), "%s  --", tempStr);
+  } else {
+    char ghz[10];
+    dtostrf(frame.cpuClock / 1000.0f, 0, 2, ghz);
+    snprintf(value, sizeof(value), "%s  %sGHz", tempStr, ghz);
+  }
+  drawStatRow(20, "cpu", value, frame.cpuLoad);
+
+  fmtNum(tempStr, sizeof(tempStr), frame.gpuTemp, 0, "C");
+  fmtPairGB(pair, sizeof(pair), frame.vramUsed, frame.vramTotal);
+  snprintf(value, sizeof(value), "%s  %s", tempStr, pair);
+  drawStatRow(37, "gpu", value, frame.gpuLoad);
+
+  /* RAM has no temperature, so the pair gets the whole width. */
+  fmtPairGB(pair, sizeof(pair), frame.ramUsed, frame.ramTotal);
+  drawStatRow(54, "ram", pair, frame.ramPercent);
 }
 
 static void drawWaiting() {

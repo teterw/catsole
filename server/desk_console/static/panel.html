@@ -168,6 +168,7 @@
     <dt>lyrics</dt><dd id="v-lyr" class="muted">--</dd>
     <dt>cpu</dt><dd id="v-cpu" class="muted">--</dd>
     <dt>gpu</dt><dd id="v-gpu" class="muted">--</dd>
+    <dt>ram</dt><dd id="v-ram" class="muted">--</dd>
   </dl>
 
   <p class="note" id="note">Switch modes with the buttons above.</p>
@@ -330,29 +331,36 @@
     drawEqualizer(frame.state === "playing" && frame.eq === 1);
   }
 
-  function drawStats(frame) {
-    var cpu = frame.cpu || {}, gpu = frame.gpu || {};
-    var font = "7px " + getComputedStyle(document.body).fontFamily;
+  function pairGB(used, total) {
+    if (used === null || used === undefined || !total) return "--";
+    return (used / 1024).toFixed(1) + "/" + (total / 1024).toFixed(1) + "GB";
+  }
 
-    ctx.font = font;
+  function statRow(baseline, label, value, load) {
+    ctx.fillStyle = PHOSPHOR;
+    ctx.fillText(label, 2, baseline);
+    ctx.fillText(value, 24, baseline);
+    drawBar(2, baseline + 2, 124, 6, load);
+  }
+
+  function drawStats(frame) {
+    var cpu = frame.cpu || {}, gpu = frame.gpu || {}, ram = frame.ram || {};
+
+    ctx.font = "7px " + getComputedStyle(document.body).fontFamily;
     ctx.fillStyle = PHOSPHOR;
     ctx.fillText("system", 2, 8);
     ctx.fillRect(0, 11, W, 1);
 
-    ctx.fillText("cpu", 2, 26);
-    ctx.fillText(
-      num(cpu.temp) + (cpu.temp === null ? "" : "C") + "  " +
-      (cpu.clock ? (cpu.clock / 1000).toFixed(2) + "G" : "--"),
-      22, 26
-    );
-    drawBar(2, 29, 124, 6, cpu.load);
+    // Three rows on a 17px pitch, matching the firmware.
+    statRow(20, "cpu",
+      num(cpu.temp) + (cpu.temp === null || cpu.temp === undefined ? "" : "C") + "  " +
+      (cpu.clock ? (cpu.clock / 1000).toFixed(2) + "GHz" : "--"), cpu.load);
 
-    ctx.fillText("gpu", 2, 48);
-    var vram = (gpu.vram_used && gpu.vram_total)
-      ? (gpu.vram_used / 1024).toFixed(1) + "/" + (gpu.vram_total / 1024).toFixed(1) + "G"
-      : "--";
-    ctx.fillText(num(gpu.temp) + (gpu.temp === null ? "" : "C") + "  " + vram, 22, 48);
-    drawBar(2, 51, 124, 6, gpu.load);
+    statRow(37, "gpu",
+      num(gpu.temp) + (gpu.temp === null || gpu.temp === undefined ? "" : "C") + "  " +
+      pairGB(gpu.vram_used, gpu.vram_total), gpu.load);
+
+    statRow(54, "ram", pairGB(ram.used, ram.total), ram.percent);
   }
 
   function drawStale() {
@@ -427,6 +435,13 @@
       num(cpu.temp, 0) + (cpu.temp === null ? "" : "°C") + "   " +
       (cpu.clock ? (cpu.clock / 1000).toFixed(2) + " GHz" : "--") + "   " +
       num(cpu.load, 0) + (cpu.load === null ? "" : "%"), false);
+    var ram = data.stats.ram || {};
+    setText("v-ram",
+      (ram.used && ram.total)
+        ? (ram.used / 1024).toFixed(1) + "/" + (ram.total / 1024).toFixed(1) + " GB   "
+          + num(ram.percent, 0) + "%"
+        : "--", !ram.total);
+
     setText("v-gpu",
       num(gpu.temp, 0) + (gpu.temp === null ? "" : "°C") + "   " +
       num(gpu.load, 0) + (gpu.load === null ? "" : "%") + "   " +

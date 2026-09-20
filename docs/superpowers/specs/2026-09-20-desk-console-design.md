@@ -76,7 +76,7 @@ Unparseable lines are dropped by both sides rather than resynchronised.
 **PC to device**
 
     {"t":"frame","mode":"lyrics","meta":"Artist - Title","main":"current line","hold_ms":3200,"eq":1,"state":"playing"}
-    {"t":"frame","mode":"stats","cpu":{"load":34,"clock":4850,"temp":61},"gpu":{"temp":68,"load":99,"vram":[4211,8188]}}
+    {"t":"frame","mode":"stats","cpu":{"load":34,"clock":4850,"temp":61},"gpu":{"temp":68,"load":99,"vram_used":4211,"vram_total":8188},"ram":{"used":12680,"total":32690,"percent":38.8}}
     {"t":"ping"}
 
 **Device to PC**
@@ -93,10 +93,12 @@ carry the full Unicode range.
    lyric line in the main band, cosmetic 12-bar equalizer along the
    bottom. Falls back through: synced LRC, then plain lyrics (static, no
    timing), then title/artist only.
-2. **Stats** — CPU clock/temp/usage and GPU temp/usage/VRAM as two
-   labelled rows with inline fill bars, refreshed every ~1s. Fields that
-   are unavailable render as `--` individually rather than blanking the
-   whole mode.
+2. **Stats** — CPU clock/temp/usage, GPU temp/usage/VRAM, and system RAM
+   used against total, as three labelled rows with inline fill bars on a
+   17px pitch, refreshed every ~1s. Fields that are unavailable render as
+   `--` individually rather than blanking the whole mode. RAM comes from
+   psutil and is reported in MB to match VRAM, so the device carries one
+   unit convention rather than two.
 
 Modes are switched from the control panel, which also exposes an
 immediate re-poll. The device itself has no input.

@@ -52,6 +52,7 @@ def empty_stats() -> dict:
     return {
         "cpu": {"temp": None, "load": None, "clock": None},
         "gpu": {"temp": None, "load": None, "vram_used": None, "vram_total": None},
+        "ram": {"used": None, "total": None, "percent": None},
     }
 
 
@@ -157,7 +158,17 @@ class HardwareReader:
             if freq is not None and freq.current:
                 stats["cpu"]["clock"] = round(freq.current, 0)
         except Exception as exc:
-            log.debug("psutil read failed: %s", exc)
+            log.debug("psutil cpu read failed: %s", exc)
+
+        # Reported in MB to match VRAM, so the device formats both the
+        # same way rather than carrying two unit conventions.
+        try:
+            mem = psutil.virtual_memory()
+            stats["ram"]["used"] = round((mem.total - mem.available) / (1024 * 1024))
+            stats["ram"]["total"] = round(mem.total / (1024 * 1024))
+            stats["ram"]["percent"] = round(mem.percent, 1)
+        except Exception as exc:
+            log.debug("psutil memory read failed: %s", exc)
 
     def _read_nvidia(self, stats: dict) -> None:
         if self._nvidia_missing:

@@ -133,9 +133,10 @@ When no synced lyrics exist the display falls back to a title card rather than
 showing an untimed line in a position it cannot justify. Responses are cached
 under `server/cache/`, which is gitignored.
 
-**Stats** — CPU clock, temperature and load; GPU temperature, load and VRAM.
-Any reading that is unavailable shows as `--` for that field alone; one dead
-sensor never blanks the mode.
+**Stats** — three labelled rows with inline usage bars: CPU clock,
+temperature and load; GPU temperature, load and VRAM; and system RAM used
+against total. Any reading that is unavailable shows as `--` for that field
+alone; one dead sensor never blanks the mode.
 
 Switch between them with the buttons on the control panel. `refresh now`
 forces an immediate re-poll rather than waiting for the next interval.
@@ -154,8 +155,8 @@ a slow sweep, so an idle device never looks like a crashed one.
 ## Hardware stats
 
 Stats work out of the box with no extra software: GPU figures come from
-`nvidia-smi` (installed with the NVIDIA driver) and CPU load and clock from
-`psutil`.
+`nvidia-smi` (installed with the NVIDIA driver), and CPU load and clock plus
+system RAM from `psutil`.
 
 **CPU temperature is the exception.** Reading a Ryzen package temperature
 needs a ring0 driver, which means
@@ -196,7 +197,7 @@ PC to device:
 
 ```json
 {"t":"frame","mode":"lyrics","meta":"Artist - Title","main":"current line","hold_ms":3200,"eq":1,"state":"playing","lyr":"synced"}
-{"t":"frame","mode":"stats","cpu":{"temp":61,"load":34,"clock":4850},"gpu":{"temp":68,"load":99,"vram_used":4211,"vram_total":8188}}
+{"t":"frame","mode":"stats","cpu":{"temp":61,"load":34,"clock":4850},"gpu":{"temp":68,"load":99,"vram_used":4211,"vram_total":8188},"ram":{"used":12680,"total":32690,"percent":38.8}}
 ```
 
 Device to PC — just the one message, sent at boot and repeated until the PC

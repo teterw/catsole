@@ -151,6 +151,7 @@ class DeskConsole:
     def _stats_frame(self) -> dict:
         cpu = self.stats.get("cpu", {})
         gpu = self.stats.get("gpu", {})
+        ram = self.stats.get("ram", {})
         return {
             "t": "frame",
             "mode": "stats",
@@ -164,6 +165,11 @@ class DeskConsole:
                 "load": gpu.get("load"),
                 "vram_used": gpu.get("vram_used"),
                 "vram_total": gpu.get("vram_total"),
+            },
+            "ram": {
+                "used": ram.get("used"),
+                "total": ram.get("total"),
+                "percent": ram.get("percent"),
             },
         }
 
