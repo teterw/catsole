@@ -193,7 +193,13 @@
   var eqPhase = [];
   var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  for (var i = 0; i < 12; i++) { eq.push(4); eqPhase.push(Math.random() * 6.28); }
+  // 43 bars at 2px with 1px gaps fills exactly 128px, matching the firmware.
+  var EQ_BARS = 43, EQ_BAR_W = 2, EQ_GAP = 1, EQ_ROW_H = 12;
+  for (var i = 0; i < EQ_BARS; i++) { eq.push(1); eqPhase.push(Math.random() * 6.28); }
+
+  // Lyric slide transition, mirroring the firmware.
+  var TRANS_MS = 260;
+  var lastMain = null, prevMain = "", transStart = 0;
 
   function fmtTime(ms) {
     if (!ms && ms !== 0) return "--";
@@ -241,20 +247,40 @@
   }
 
   function drawEqualizer(active) {
-    var bars = eq.length;
-    var bw = 3, gapw = 1;
-    var totalW = bars * bw + (bars - 1) * gapw;
-    var x0 = Math.floor((W - totalW) / 2);
-    for (var i = 0; i < bars; i++) {
+    for (var i = 0; i < eq.length; i++) {
       if (active && !reduceMotion) {
-        var target = 2 + Math.abs(Math.sin(Date.now() / 260 + eqPhase[i])) * 9;
-        eq[i] += (target - eq[i]) * 0.25;
+        // Travelling wave: two sines offset by bar index, so neighbours
+        // stay related and the row reads as one sweep across the screen.
+        var t = Date.now() / 240;
+        var x = i * 0.34 + eqPhase[i] * 0.02;
+        var v = Math.abs(Math.sin(t + x)) * 0.62
+              + Math.abs(Math.sin(t * 0.47 + x * 1.9)) * 0.38;
+        eq[i] += ((1 + v * (EQ_ROW_H - 1)) - eq[i]) * 0.28;
       } else {
         eq[i] += (1 - eq[i]) * 0.12;   // decay to a flat line when idle
       }
-      var h = Math.max(1, Math.round(eq[i]));
+      var h = Math.min(EQ_ROW_H, Math.max(1, Math.round(eq[i])));
       ctx.fillStyle = PHOSPHOR;
-      ctx.fillRect(x0 + i * (bw + gapw), H - 1 - h, bw, h);
+      ctx.fillRect(i * (EQ_BAR_W + EQ_GAP), H - h, EQ_BAR_W, h);
+    }
+  }
+
+  function drawMainText(text, yShift) {
+    if (!text) return;
+    ctx.font = "10px " + getComputedStyle(document.body).fontFamily;
+    ctx.fillStyle = PHOSPHOR;
+    var words = text.split(" ");
+    var lines = [], cur = "";
+    for (var i = 0; i < words.length; i++) {
+      var test = cur ? cur + " " + words[i] : words[i];
+      if (ctx.measureText(test).width > W - 4 && cur) { lines.push(cur); cur = words[i]; }
+      else { cur = test; }
+    }
+    if (cur) lines.push(cur);
+    lines = lines.slice(0, 3);
+    var y = lines.length > 1 ? 26 : 32;
+    for (var j = 0; j < lines.length; j++) {
+      ctx.fillText(lines[j], 2, y + j * 12 + yShift);
     }
   }
 
@@ -282,20 +308,23 @@
       ctx.fillStyle = PHOSPHOR;
       ctx.fillText("nothing playing", 2, 34);
     } else if (main) {
-      ctx.font = "10px " + getComputedStyle(document.body).fontFamily;
-      ctx.fillStyle = PHOSPHOR;
-      // Wrap the main line across up to two rows, as the firmware does.
-      var words = main.split(" ");
-      var lines = [], cur = "";
-      for (var i = 0; i < words.length; i++) {
-        var test = cur ? cur + " " + words[i] : words[i];
-        if (ctx.measureText(test).width > W - 4 && cur) { lines.push(cur); cur = words[i]; }
-        else { cur = test; }
+      if (main !== lastMain) {
+        prevMain = (lastMain === null) ? "" : lastMain;
+        lastMain = main;
+        transStart = Date.now();
       }
-      if (cur) lines.push(cur);
-      lines = lines.slice(0, 2);
-      var y = lines.length > 1 ? 26 : 32;
-      for (var j = 0; j < lines.length; j++) { ctx.fillText(lines[j], 2, y + j * 12); }
+      var since = Date.now() - transStart;
+      if (since < TRANS_MS && !reduceMotion) {
+        var pr = since / TRANS_MS, q = 1 - pr, eased = 1 - q * q * q;
+        var travel = 36;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(0, 14, W, 36); ctx.clip();
+        drawMainText(prevMain, -eased * travel);
+        drawMainText(main, (1 - eased) * travel);
+        ctx.restore();
+      } else {
+        drawMainText(main, 0);
+      }
     }
 
     drawEqualizer(frame.state === "playing" && frame.eq === 1);

@@ -72,7 +72,12 @@ static const uint8_t SCREEN_W = 128;
 static const uint8_t SCREEN_H = 64;
 static const uint8_t META_BASELINE = 7;
 static const uint8_t RULE_Y = 10;
-static const uint8_t EQ_BARS = 12;
+/* 43 bars at 2px with 1px gaps comes to exactly 128px, so the row spans
+   the full width with no margin left over. */
+static const uint8_t EQ_BARS = 43;
+static const uint8_t EQ_BAR_W = 2;
+static const uint8_t EQ_GAP = 1;
+static const uint8_t EQ_ROW_H = 12; /* y 52..63 */
 
 /* ---- link state ---------------------------------------------------- */
 enum LinkState { LINK_BOOT, LINK_WAITING, LINK_LIVE, LINK_STALE };
@@ -105,6 +110,13 @@ static int16_t marqueeOffset = 0;
 static uint32_t lastMarqueeMs = 0;
 static float eqHeight[EQ_BARS];
 static uint16_t eqPhase[EQ_BARS];
+
+/* A lyric line that swaps instantly is jarring at this size, so the
+   outgoing line is kept around long enough to slide it out while the new
+   one slides in beneath it. */
+static const uint16_t TRANSITION_MS = 260;
+static char prevMainText[104];
+static uint32_t transitionStartMs = 0;
 
 /* ---- serial receive -------------------------------------------------- */
 static char rxBuf[640];
@@ -184,7 +196,16 @@ static void handleLine(const char *line) {
   copyField(frame.state, sizeof(frame.state), doc["state"] | "idle");
   copyField(frame.lyr, sizeof(frame.lyr), doc["lyr"] | "none");
   copyField(frame.meta, sizeof(frame.meta), doc["meta"] | "");
-  copyField(frame.mainText, sizeof(frame.mainText), doc["main"] | "");
+
+  /* Frames arrive several times a second carrying the same line, so the
+     transition must start only on a genuine change. */
+  char incoming[sizeof(frame.mainText)];
+  copyField(incoming, sizeof(incoming), doc["main"] | "");
+  if (strcmp(incoming, frame.mainText) != 0) {
+    copyField(prevMainText, sizeof(prevMainText), frame.mainText);
+    transitionStartMs = millis();
+  }
+  copyField(frame.mainText, sizeof(frame.mainText), incoming);
   frame.eq = doc["eq"] | 0;
   frame.holdMs = doc["hold_ms"] | 0UL;
   frame.receivedAtMs = millis();
@@ -359,8 +380,10 @@ static const uint8_t MAIN_STYLE_COUNT = 3;
 static const uint8_t BAND_TOP = 14;
 static const uint8_t BAND_BOTTOM = 50;
 
-/* Draws the main line, vertically centred, at the largest size that fits. */
-static void drawMainText(const char *text, uint8_t boxW) {
+/* Draws the main line, vertically centred, at the largest size that fits.
+   yShift moves the whole block, which is what the slide transition uses;
+   the caller clips to the band so shifted text cannot escape it. */
+static void drawMainText(const char *text, uint8_t boxW, int16_t yShift) {
   if (text[0] == 0) return;
 
   uint8_t chosen = MAIN_STYLE_COUNT - 1;
@@ -381,30 +404,34 @@ static void drawMainText(const char *text, uint8_t boxW) {
   uint8_t top = BAND_TOP + (bandH > total ? (uint8_t)((bandH - total) / 2) : 0);
 
   for (uint8_t i = 0; i < wrapCount; i++) {
-    u8g2.drawUTF8(2, top + (i + 1) * style.lineH - 3, wrapBuf[i]);
+    int16_t y = (int16_t)(top + (i + 1) * style.lineH - 3) + yShift;
+    /* Skip lines that have travelled clear of the band. */
+    if (y < (int16_t)BAND_TOP - 20 || y > (int16_t)BAND_BOTTOM + 20) continue;
+    u8g2.drawUTF8(2, y, wrapBuf[i]);
   }
 }
 
 static void drawEqualizer(bool active) {
-  const uint8_t barW = 3;
-  const uint8_t gap = 1;
-  const uint8_t totalW = EQ_BARS * barW + (EQ_BARS - 1) * gap;
-  const uint8_t x0 = (SCREEN_W - totalW) / 2;
-
   for (uint8_t i = 0; i < EQ_BARS; i++) {
     float target;
     if (active) {
-      /* Cosmetic: there is no microphone on this build, so the bars are
-         driven by offset sines rather than pretending to follow audio. */
-      float phase = (millis() / 260.0f) + (eqPhase[i] / 100.0f);
-      target = 2.0f + fabs(sin(phase)) * 9.0f;
+      /* Cosmetic: there is no microphone on this build, so rather than
+         pretend to follow audio the row runs a travelling wave. Two sines
+         at different rates, offset by bar index, keep neighbours related
+         so it reads as something sweeping the screen rather than as
+         independent noise. The per-bar jitter stops it looking synthetic. */
+      float t = millis() / 240.0f;
+      float x = i * 0.34f + (eqPhase[i] / 900.0f);
+      float v = fabs(sin(t + x)) * 0.62f + fabs(sin(t * 0.47f + x * 1.9f)) * 0.38f;
+      target = 1.0f + v * (EQ_ROW_H - 1);
     } else {
       target = 1.0f;  /* decay to a flat line when idle or paused */
     }
-    eqHeight[i] += (target - eqHeight[i]) * (active ? 0.25f : 0.12f);
+    eqHeight[i] += (target - eqHeight[i]) * (active ? 0.28f : 0.12f);
 
     uint8_t h = (uint8_t)max(1.0f, eqHeight[i]);
-    u8g2.drawBox(x0 + i * (barW + gap), SCREEN_H - h, barW, h);
+    if (h > EQ_ROW_H) h = EQ_ROW_H;
+    u8g2.drawBox(i * (EQ_BAR_W + EQ_GAP), SCREEN_H - h, EQ_BAR_W, h);
   }
 }
 
@@ -419,7 +446,25 @@ static void drawLyrics() {
     u8g2.setFont(u8g2_font_6x12_tf);
     u8g2.drawUTF8(2, 34, "nothing playing");
   } else if (frame.mainText[0] != 0) {
-    drawMainText(frame.mainText, SCREEN_W - 4);
+    uint32_t since = millis() - transitionStartMs;
+    if (since < TRANSITION_MS) {
+      /* Ease out, so the incoming line decelerates into place instead of
+         stopping dead. The band is clipped for the duration so neither
+         line can bleed into the meta strip or the equalizer row. */
+      float p = (float)since / (float)TRANSITION_MS;
+      float q = 1.0f - p;
+      float eased = 1.0f - (q * q * q);
+      int16_t travel = (int16_t)(BAND_BOTTOM - BAND_TOP);
+
+      u8g2.setClipWindow(0, BAND_TOP, SCREEN_W, BAND_BOTTOM);
+      if (prevMainText[0] != 0) {
+        drawMainText(prevMainText, SCREEN_W - 4, (int16_t)(-eased * travel));
+      }
+      drawMainText(frame.mainText, SCREEN_W - 4, (int16_t)((1.0f - eased) * travel));
+      u8g2.setMaxClipWindow();
+    } else {
+      drawMainText(frame.mainText, SCREEN_W - 4, 0);
+    }
 
     if (strcmp(frame.lyr, "synced") == 0) {
       /* Hairline showing how much of this line's window remains. When it
