@@ -1,0 +1,62 @@
+"""Runtime configuration, overridable from config.json next to run.py."""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
+
+
+@dataclass
+class Config:
+    # Serial
+    serial_port: str | None = None  # None means autodetect by USB VID/PID
+    baud: int = 115200
+
+    # Web control panel
+    web_host: str = "127.0.0.1"
+    web_port: int = 8730
+
+    # Poll cadence, in seconds
+    media_poll_s: float = 0.25
+    stats_poll_s: float = 1.0
+    frame_interval_s: float = 0.25
+
+    # Positive values push lyrics later, negative pull them earlier. Some
+    # players report position ahead of what you actually hear.
+    lyric_offset_ms: int = 0
+
+    start_mode: str = "lyrics"
+    cache_dir: Path = field(default_factory=lambda: DEFAULT_CACHE_DIR)
+    user_agent: str = "desk-console/1.0 (https://github.com/teterw/desk-console)"
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> "Config":
+        """Load config.json if present; fall back to defaults otherwise."""
+        config = cls()
+        if path is None or not Path(path).exists():
+            return config
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            log.warning("ignoring unreadable config %s: %s", path, exc)
+            return config
+
+        for key, value in raw.items():
+            if not hasattr(config, key):
+                log.warning("ignoring unknown config key: %s", key)
+                continue
+            if key == "cache_dir":
+                value = Path(value)
+            setattr(config, key, value)
+        return config
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["cache_dir"] = str(self.cache_dir)
+        return data

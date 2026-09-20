@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>desk-console</title>
+<style>
+  :root {
+    --ink: #16191d;         /* page: graphite, lighter than the screen */
+    --glass: #06080a;       /* the OLED itself: darkest thing on the page */
+    --rule: #2b3037;
+    --text: #c8ccd2;
+    --dim: #6b747f;
+    --phosphor: #b8e8ff;    /* what a blue/white SSD1309 actually emits */
+    --amber: #e8a23d;       /* stale link only */
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, "DejaVu Sans Mono",
+            ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 28px 16px 56px;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .link-state {
+    color: var(--dim);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 6px;
+    background: var(--dim);
+    vertical-align: middle;
+  }
+  .dot.up { background: var(--phosphor); }
+  .dot.down { background: var(--amber); }
+
+  /* The preview is the hero: real 128x64 pixels, scaled with hard edges. */
+  .screen {
+    margin: 26px 0 22px;
+    padding: 14px;
+    background: var(--glass);
+    border: 1px solid var(--rule);
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 2 / 1;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 26px;
+  }
+
+  /* Buttons invert the way a 1-bit selection does, not the way a pill does. */
+  button {
+    font: inherit;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--rule);
+    padding: 5px 14px;
+    cursor: pointer;
+    border-radius: 0;
+  }
+  button:hover { border-color: var(--dim); }
+  button:focus-visible {
+    outline: 2px solid var(--phosphor);
+    outline-offset: 2px;
+  }
+  button[aria-pressed="true"] {
+    background: var(--phosphor);
+    border-color: var(--phosphor);
+    color: var(--glass);
+  }
+
+  dl {
+    margin: 0;
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 0;
+  }
+
+  dt, dd {
+    margin: 0;
+    padding: 7px 0;
+    border-top: 1px solid var(--rule);
+  }
+  dt { color: var(--dim); }
+  dd { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .muted { color: var(--dim); }
+
+  .note {
+    margin-top: 24px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    color: var(--dim);
+    font-size: 12px;
+  }
+
+  @media (max-width: 420px) {
+    dl { grid-template-columns: 76px 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>desk-console</h1>
+    <div class="link-state"><span class="dot" id="dot"></span><span id="linkText">connecting</span></div>
+  </header>
+
+  <div class="screen">
+    <canvas id="oled" width="128" height="64" role="img"
+            aria-label="Live preview of the device display"></canvas>
+  </div>
+
+  <div class="controls">
+    <button id="btn-lyrics" data-mode="lyrics" aria-pressed="false">lyrics</button>
+    <button id="btn-stats" data-mode="stats" aria-pressed="false">stats</button>
+    <button id="btn-refresh">refresh now</button>
+  </div>
+
+  <dl>
+    <dt>playing</dt><dd id="v-track" class="muted">nothing yet</dd>
+    <dt>position</dt><dd id="v-pos" class="muted">--</dd>
+    <dt>lyrics</dt><dd id="v-lyr" class="muted">--</dd>
+    <dt>cpu</dt><dd id="v-cpu" class="muted">--</dd>
+    <dt>gpu</dt><dd id="v-gpu" class="muted">--</dd>
+    <dt>last tag</dt><dd id="v-tag" class="muted">none</dd>
+  </dl>
+
+  <p class="note" id="note">Tap a tag to change mode. Hold it to refresh.</p>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var canvas = document.getElementById("oled");
+  var ctx = canvas.getContext("2d");
+  var W = 128, H = 64;
+
+  var PHOSPHOR = "#b8e8ff";
+  var AMBER = "#e8a23d";
+  var GLASS = "#06080a";
+
+  var state = null;
+  var lastOk = 0;
+  var marquee = 0;
+  var eq = [];
+  var eqPhase = [];
+  var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  for (var i = 0; i < 12; i++) { eq.push(4); eqPhase.push(Math.random() * 6.28); }
+
+  function fmtTime(ms) {
+    if (!ms && ms !== 0) return "--";
+    var total = Math.floor(ms / 1000);
+    var m = Math.floor(total / 60);
+    var s = total % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function num(v, digits) {
+    if (v === null || v === undefined) return "--";
+    return digits ? v.toFixed(digits) : String(Math.round(v));
+  }
+
+  // ---- canvas: mirror what the firmware draws -------------------------
+
+  function clear() {
+    ctx.fillStyle = GLASS;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function textWidth(text, font) {
+    ctx.font = font;
+    return ctx.measureText(text).width;
+  }
+
+  function drawMarquee(text, y, font, color, boxW) {
+    ctx.font = font;
+    ctx.fillStyle = color;
+    var w = ctx.measureText(text).width;
+    if (w <= boxW) {
+      ctx.fillText(text, 2, y);
+      return;
+    }
+    var gap = 14;
+    var span = w + gap;
+    var offset = marquee % span;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, y - 8, boxW + 2, 12);
+    ctx.clip();
+    ctx.fillText(text, 2 - offset, y);
+    ctx.fillText(text, 2 - offset + span, y);
+    ctx.restore();
+  }
+
+  function drawEqualizer(active) {
+    var bars = eq.length;
+    var bw = 3, gapw = 1;
+    var totalW = bars * bw + (bars - 1) * gapw;
+    var x0 = Math.floor((W - totalW) / 2);
+    for (var i = 0; i < bars; i++) {
+      if (active && !reduceMotion) {
+        var target = 2 + Math.abs(Math.sin(Date.now() / 260 + eqPhase[i])) * 9;
+        eq[i] += (target - eq[i]) * 0.25;
+      } else {
+        eq[i] += (1 - eq[i]) * 0.12;   // decay to a flat line when idle
+      }
+      var h = Math.max(1, Math.round(eq[i]));
+      ctx.fillStyle = PHOSPHOR;
+      ctx.fillRect(x0 + i * (bw + gapw), H - 1 - h, bw, h);
+    }
+  }
+
+  function drawBar(x, y, w, h, pct) {
+    ctx.strokeStyle = PHOSPHOR;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    if (pct === null || pct === undefined) return;
+    var fill = Math.max(0, Math.min(1, pct / 100)) * (w - 4);
+    ctx.fillStyle = PHOSPHOR;
+    ctx.fillRect(x + 2, y + 2, fill, h - 4);
+  }
+
+  function drawLyrics(frame) {
+    var meta = frame.meta || "";
+    var main = frame.main || "";
+
+    drawMarquee(meta, 8, "7px " + getComputedStyle(document.body).fontFamily, PHOSPHOR, W - 4);
+
+    ctx.fillStyle = PHOSPHOR;
+    ctx.fillRect(0, 11, W, 1);
+
+    if (frame.state === "idle") {
+      ctx.font = "8px " + getComputedStyle(document.body).fontFamily;
+      ctx.fillStyle = PHOSPHOR;
+      ctx.fillText("nothing playing", 2, 34);
+    } else if (main) {
+      ctx.font = "10px " + getComputedStyle(document.body).fontFamily;
+      ctx.fillStyle = PHOSPHOR;
+      // Wrap the main line across up to two rows, as the firmware does.
+      var words = main.split(" ");
+      var lines = [], cur = "";
+      for (var i = 0; i < words.length; i++) {
+        var test = cur ? cur + " " + words[i] : words[i];
+        if (ctx.measureText(test).width > W - 4 && cur) { lines.push(cur); cur = words[i]; }
+        else { cur = test; }
+      }
+      if (cur) lines.push(cur);
+      lines = lines.slice(0, 2);
+      var y = lines.length > 1 ? 26 : 32;
+      for (var j = 0; j < lines.length; j++) { ctx.fillText(lines[j], 2, y + j * 12); }
+    }
+
+    drawEqualizer(frame.state === "playing" && frame.eq === 1);
+  }
+
+  function drawStats(frame) {
+    var cpu = frame.cpu || {}, gpu = frame.gpu || {};
+    var font = "7px " + getComputedStyle(document.body).fontFamily;
+
+    ctx.font = font;
+    ctx.fillStyle = PHOSPHOR;
+    ctx.fillText("system", 2, 8);
+    ctx.fillRect(0, 11, W, 1);
+
+    ctx.fillText("cpu", 2, 26);
+    ctx.fillText(
+      num(cpu.temp) + (cpu.temp === null ? "" : "C") + "  " +
+      (cpu.clock ? (cpu.clock / 1000).toFixed(2) + "G" : "--"),
+      22, 26
+    );
+    drawBar(2, 29, 124, 6, cpu.load);
+
+    ctx.fillText("gpu", 2, 48);
+    var vram = (gpu.vram_used && gpu.vram_total)
+      ? (gpu.vram_used / 1024).toFixed(1) + "/" + (gpu.vram_total / 1024).toFixed(1) + "G"
+      : "--";
+    ctx.fillText(num(gpu.temp) + (gpu.temp === null ? "" : "C") + "  " + vram, 22, 48);
+    drawBar(2, 51, 124, 6, gpu.load);
+  }
+
+  function drawStale() {
+    // Dither the whole frame down, the way the firmware XOR-dims it.
+    ctx.fillStyle = GLASS;
+    for (var y = 0; y < H; y++) {
+      for (var x = (y % 2); x < W; x += 2) { ctx.fillRect(x, y, 1, 1); }
+    }
+    ctx.fillStyle = AMBER;
+    ctx.fillRect(0, 0, 34, 9);
+    ctx.fillStyle = GLASS;
+    ctx.font = "7px " + getComputedStyle(document.body).fontFamily;
+    ctx.fillText("no link", 3, 7);
+  }
+
+  function render() {
+    clear();
+    if (!reduceMotion) marquee += 0.4;
+
+    if (!state || !state.frame) {
+      ctx.fillStyle = PHOSPHOR;
+      ctx.font = "8px " + getComputedStyle(document.body).fontFamily;
+      ctx.fillText("waiting for service", 2, 34);
+    } else if (state.frame.mode === "stats") {
+      drawStats(state.frame);
+    } else {
+      drawLyrics(state.frame);
+    }
+
+    if (state && Date.now() - lastOk > 5000) drawStale();
+
+    requestAnimationFrame(render);
+  }
+
+  // ---- data ------------------------------------------------------------
+
+  function setText(id, text, muted) {
+    var el = document.getElementById(id);
+    el.textContent = text;
+    el.classList.toggle("muted", !!muted);
+  }
+
+  function apply(data) {
+    state = data;
+    lastOk = Date.now();
+
+    var connected = data.link && data.link.connected;
+    document.getElementById("dot").className = "dot " + (connected ? "up" : "down");
+    document.getElementById("linkText").textContent = connected
+      ? (data.link.port || "connected")
+      : "no device";
+
+    document.querySelectorAll("button[data-mode]").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.mode === data.mode));
+    });
+
+    var np = data.now_playing;
+    if (np) {
+      setText("v-track", (np.artist ? np.artist + " - " : "") + np.title, false);
+      setText("v-pos", fmtTime(np.position_ms) + " / " + fmtTime(np.duration_ms), false);
+    } else {
+      setText("v-track", "nothing playing", true);
+      setText("v-pos", "--", true);
+    }
+
+    setText("v-lyr", data.lyrics_kind === "synced" ? "synced"
+      : data.lyrics_kind === "plain" ? "found, not timed"
+      : "none found", data.lyrics_kind === "none");
+
+    var cpu = data.stats.cpu || {}, gpu = data.stats.gpu || {};
+    setText("v-cpu",
+      num(cpu.temp, 0) + (cpu.temp === null ? "" : "°C") + "   " +
+      (cpu.clock ? (cpu.clock / 1000).toFixed(2) + " GHz" : "--") + "   " +
+      num(cpu.load, 0) + (cpu.load === null ? "" : "%"), false);
+    setText("v-gpu",
+      num(gpu.temp, 0) + (gpu.temp === null ? "" : "°C") + "   " +
+      num(gpu.load, 0) + (gpu.load === null ? "" : "%") + "   " +
+      ((gpu.vram_used && gpu.vram_total)
+        ? (gpu.vram_used / 1024).toFixed(1) + "/" + (gpu.vram_total / 1024).toFixed(1) + " GB"
+        : "--"), false);
+
+    setText("v-tag", data.last_tag && data.last_tag.uid
+      ? data.last_tag.uid + "  " + data.last_tag.kind
+      : "none yet", !(data.last_tag && data.last_tag.uid));
+
+    document.getElementById("note").textContent = connected
+      ? (data.lhm ? "Tap a tag to change mode. Hold it to refresh."
+                  : "CPU temperature needs LibreHardwareMonitor running. Everything else is live.")
+      : "No device on any port. Check the cable, or start the service with --no-serial.";
+  }
+
+  function poll() {
+    fetch("/api/state")
+      .then(function (r) { return r.json(); })
+      .then(apply)
+      .catch(function () { /* service down; the stale treatment says so */ });
+  }
+
+  document.querySelectorAll("button[data-mode]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      fetch("/api/mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: btn.dataset.mode })
+      }).then(poll);
+    });
+  });
+
+  document.getElementById("btn-refresh").addEventListener("click", function () {
+    fetch("/api/refresh", { method: "POST" }).then(poll);
+  });
+
+  poll();
+  setInterval(poll, 1000);
+  requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>
