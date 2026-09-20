@@ -50,6 +50,22 @@ U8G2_SSD1309_128X64_NONAME0_F_4W_HW_SPI u8g2(U8G2_R0, PIN_CS, PIN_DC, PIN_RES);
 U8G2_SSD1309_128X64_NONAME2_F_4W_HW_SPI u8g2(U8G2_R0, PIN_CS, PIN_DC, PIN_RES);
 #endif
 
+/*
+ * Hardware SPI clock.
+ *
+ * The R4 clocks SPI far faster by default than typical dupont wiring
+ * carries cleanly. On this build the default speed produced corrupted
+ * init commands -- the panel came up inverted about half the time -- and
+ * the display dropped its state seconds after each init. 1MHz was verified
+ * stable on the bench and is ample: a 1KB frame buffer at 30fps needs
+ * roughly 250kbit/s, so this leaves headroom to spare.
+ *
+ * If you shorten the wiring, 2MHz and 4MHz are worth trying, in that
+ * order. Symptoms of running too fast are an upside-down image or a panel
+ * that blanks and needs a reset.
+ */
+static const uint32_t DISPLAY_BUS_HZ = 1000000;
+
 PN532_I2C pn532i2c(Wire);
 PN532 nfc(pn532i2c);
 
@@ -592,6 +608,8 @@ void setup() {
     eqPhase[i] = (uint16_t)random(0, 628);
   }
 
+  /* Must be set before begin(), which is when the init sequence is sent. */
+  u8g2.setBusClock(DISPLAY_BUS_HZ);
   u8g2.begin();
   u8g2.setFontMode(1);
   u8g2.enableUTF8Print();
