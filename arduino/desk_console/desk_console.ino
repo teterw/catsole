@@ -123,6 +123,7 @@ static bool holdFired = false;
 static uint8_t missCount = 0;
 static uint32_t tagSinceMs = 0;
 static uint32_t lastNfcPollMs = 0;
+static uint32_t lastNfcRetryMs = 0;
 static char tagUid[21] = {0};
 
 /* ---- serial receive -------------------------------------------------- */
@@ -152,6 +153,35 @@ static void copyField(char *dest, size_t size, const char *src) {
   dest[size - 1] = 0;
 }
 
+/* Probe the I2C bus and list what answered.
+ *
+ * Reported in the hello frame so a reader that is not responding can be
+ * told apart from one that is wired to the wrong pins: an empty list
+ * means nothing is on the bus at all, whereas a device at an unexpected
+ * address means it is alive but not in the mode we expect. The PN532
+ * answers at 0x24 when its switches are set to I2C. */
+static void scanI2C(char *out, size_t size) {
+  size_t pos = 0;
+  out[0] = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0 && pos + 7 < size) {
+      pos += snprintf(out + pos, size - pos, "%s\"0x%02X\"", pos ? "," : "",
+                      addr);
+    }
+  }
+}
+
+/* Try to bring the reader up. Called at boot and retried while it is
+   absent, so fixing the wiring does not require a re-flash. */
+static bool initNfc() {
+  uint32_t version = nfc.getFirmwareVersion();
+  if (!version) return false;
+  /* SAMConfig is mandatory: without it reads fail silently forever. */
+  nfc.SAMConfig();
+  return true;
+}
+
 /* Format a float that may be absent. */
 static void fmtNum(char *out, size_t n, float value, uint8_t decimals,
                    const char *suffix) {
@@ -169,11 +199,27 @@ static void fmtNum(char *out, size_t n, float value, uint8_t decimals,
  * ==================================================================== */
 
 static void sendHello() {
+  /* Deliberately cheap: this runs every 1.5s until the PC answers, so it
+     must not touch the I2C bus. Probing a bus with nothing on it costs
+     roughly a hundred milliseconds per address, and scanning all of them
+     here once stretched this message's interval from 1.5s to 12s. The
+     full scan is available on demand instead, via the "scan" command. */
   Serial.print(F("{\"t\":\"hello\",\"fw\":\""));
   Serial.print(F(FIRMWARE_VERSION));
   Serial.print(F("\",\"variant\":"));
   Serial.print(DISPLAY_VARIANT);
+  Serial.print(F(",\"nfc\":"));
+  Serial.print(nfcReady ? F("true") : F("false"));
   Serial.println(F("}"));
+}
+
+/* Full bus scan, on request only. Slow when the bus is empty. */
+static void sendScan() {
+  char devices[64];
+  scanI2C(devices, sizeof(devices));
+  Serial.print(F("{\"t\":\"i2c\",\"devices\":["));
+  Serial.print(devices);
+  Serial.println(F("]}"));
 }
 
 static void sendTap(const char *uid, const char *kind) {
@@ -200,6 +246,11 @@ static void handleLine(const char *line) {
   if (strcmp(type, "ping") == 0) {
     lastFrameMs = millis();
     everReceived = true;
+    return;
+  }
+
+  if (strcmp(type, "scan") == 0) {
+    sendScan();
     return;
   }
 
@@ -326,56 +377,143 @@ static void drawMarquee(const char *text, uint8_t baseline, uint8_t boxW) {
   const uint8_t gap = 14;
   uint16_t span = width + gap;
   int16_t offset = marqueeOffset % (int16_t)span;
-  u8g2.setClipWindow(0, baseline - 8, boxW + 2, baseline + 3);
+
+  /* Clip coordinates are unsigned, so a baseline near the top of the
+     screen must not be allowed to go negative here: it wraps to a huge
+     value, the clip window stops meaning anything, and the off-screen
+     copy of the text gets drawn straight across the rest of the panel. */
+  uint8_t top = (baseline >= 8) ? (uint8_t)(baseline - 8) : 0;
+  uint8_t bottom = (uint8_t)min((int)baseline + 3, (int)SCREEN_H);
+
+  u8g2.setClipWindow(0, top, boxW + 2, bottom);
   u8g2.drawUTF8(2 - offset, baseline, text);
   u8g2.drawUTF8(2 - offset + span, baseline, text);
   u8g2.setMaxClipWindow();
 }
 
-/* Wrap into at most two lines, breaking on spaces. */
-static void drawWrapped(const char *text, uint8_t topBaseline, uint8_t lineH,
-                        uint8_t boxW) {
+/* ---- text wrapping --------------------------------------------------
+ *
+ * A lyric line is whatever length the song makes it, so the band has to
+ * adapt rather than assume two lines will do. Wrap greedily by word at
+ * the current font; if the text still will not fit in the lines
+ * available, step down to a smaller font rather than cut the tail off.
+ */
+#define MAX_WRAP_LINES 4
+#define MAX_WRAP_CHARS 48
+
+static char wrapBuf[MAX_WRAP_LINES][MAX_WRAP_CHARS];
+static uint8_t wrapCount = 0;
+
+/* Fills wrapBuf. Returns true only if the whole string was consumed. */
+static bool wrapText(const char *text, uint8_t boxW, uint8_t maxLines) {
+  wrapCount = 0;
+  const char *p = text;
+  if (maxLines > MAX_WRAP_LINES) maxLines = MAX_WRAP_LINES;
+
+  char cur[MAX_WRAP_CHARS];
+  char cand[MAX_WRAP_CHARS];
+
+  while (*p && wrapCount < maxLines) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+
+    cur[0] = 0;
+    uint16_t curLen = 0;
+
+    while (*p) {
+      const char *wordStart = p;
+      while (*p && *p != ' ') p++;
+      uint16_t wordLen = (uint16_t)(p - wordStart);
+
+      if (curLen + (curLen ? 1 : 0) + wordLen >= MAX_WRAP_CHARS) {
+        p = wordStart;
+        break;
+      }
+
+      uint16_t pos = curLen;
+      memcpy(cand, cur, curLen);
+      if (curLen) cand[pos++] = ' ';
+      memcpy(cand + pos, wordStart, wordLen);
+      pos += wordLen;
+      cand[pos] = 0;
+
+      if (u8g2.getUTF8Width(cand) <= boxW) {
+        memcpy(cur, cand, pos + 1);
+        curLen = pos;
+        while (*p == ' ') p++;
+      } else {
+        p = wordStart;  /* Does not fit: this word starts the next line. */
+        break;
+      }
+    }
+
+    if (curLen == 0) {
+      /* A single word wider than the panel. Break it mid-word, otherwise
+         the loop cannot advance and nothing would ever be drawn. */
+      const char *wordStart = p;
+      uint16_t fit = 1;
+      for (uint16_t i = 1; wordStart[i] && i < MAX_WRAP_CHARS - 1; i++) {
+        memcpy(cand, wordStart, i);
+        cand[i] = 0;
+        if (u8g2.getUTF8Width(cand) <= boxW) fit = i;
+        else break;
+      }
+      memcpy(cur, wordStart, fit);
+      cur[fit] = 0;
+      curLen = fit;
+      p = wordStart + fit;
+    }
+
+    memcpy(wrapBuf[wrapCount], cur, curLen + 1);
+    wrapCount++;
+  }
+
+  while (*p == ' ') p++;
+  return (*p == 0);
+}
+
+struct TextStyle {
+  const uint8_t *font;
+  uint8_t maxLines;
+  uint8_t lineH;
+};
+
+/* Largest first. The first style that fits the whole line wins. */
+static const TextStyle MAIN_STYLES[] = {
+    {u8g2_font_helvB10_tf, 2, 13},
+    {u8g2_font_6x12_tf, 3, 11},
+    {u8g2_font_5x7_tf, 4, 8},
+};
+static const uint8_t MAIN_STYLE_COUNT = 3;
+
+/* The band between the rule and the equalizer row. */
+static const uint8_t BAND_TOP = 14;
+static const uint8_t BAND_BOTTOM = 50;
+
+/* Draws the main line, vertically centred, at the largest size that fits. */
+static void drawMainText(const char *text, uint8_t boxW) {
   if (text[0] == 0) return;
 
-  char line[sizeof(frame.mainText)];
-  uint16_t len = strlen(text);
-
-  if (u8g2.getUTF8Width(text) <= boxW) {
-    u8g2.drawUTF8(2, topBaseline + lineH / 2, text);
-    return;
-  }
-
-  /* Find the last space that still fits on the first line. */
-  uint16_t best = 0;
-  for (uint16_t i = 0; i < len; i++) {
-    if (text[i] != ' ') continue;
-    memcpy(line, text, i);
-    line[i] = 0;
-    if (u8g2.getUTF8Width(line) <= boxW) best = i;
-    else break;
-  }
-
-  if (best == 0) {
-    /* One very long word: hard-truncate rather than overflow the band. */
-    memcpy(line, text, sizeof(line) - 1);
-    line[sizeof(line) - 1] = 0;
-    while (strlen(line) > 1 && u8g2.getUTF8Width(line) > boxW) {
-      line[strlen(line) - 1] = 0;
+  uint8_t chosen = MAIN_STYLE_COUNT - 1;
+  for (uint8_t i = 0; i < MAIN_STYLE_COUNT; i++) {
+    u8g2.setFont(MAIN_STYLES[i].font);
+    if (wrapText(text, boxW, MAIN_STYLES[i].maxLines)) {
+      chosen = i;
+      break;
     }
-    u8g2.drawUTF8(2, topBaseline, line);
-    return;
   }
 
-  memcpy(line, text, best);
-  line[best] = 0;
-  u8g2.drawUTF8(2, topBaseline, line);
+  /* If nothing fit, wrapBuf already holds the smallest font's attempt. */
+  const TextStyle style = MAIN_STYLES[chosen];
+  u8g2.setFont(style.font);
 
-  const char *rest = text + best + 1;
-  copyField(line, sizeof(line), rest);
-  while (strlen(line) > 1 && u8g2.getUTF8Width(line) > boxW) {
-    line[strlen(line) - 1] = 0;
+  uint8_t total = wrapCount * style.lineH;
+  uint8_t bandH = BAND_BOTTOM - BAND_TOP;
+  uint8_t top = BAND_TOP + (bandH > total ? (uint8_t)((bandH - total) / 2) : 0);
+
+  for (uint8_t i = 0; i < wrapCount; i++) {
+    u8g2.drawUTF8(2, top + (i + 1) * style.lineH - 3, wrapBuf[i]);
   }
-  u8g2.drawUTF8(2, topBaseline + lineH, line);
 }
 
 static void drawEqualizer(bool active) {
@@ -420,10 +558,9 @@ static void drawLyrics() {
     u8g2.setFont(u8g2_font_6x12_tf);
     u8g2.drawUTF8(2, 34, "nothing playing");
   } else if (frame.mainText[0] != 0) {
-    if (strcmp(frame.lyr, "synced") == 0) {
-      u8g2.setFont(u8g2_font_helvB10_tf);
-      drawWrapped(frame.mainText, 28, 13, SCREEN_W - 4);
+    drawMainText(frame.mainText, SCREEN_W - 4);
 
+    if (strcmp(frame.lyr, "synced") == 0) {
       /* Hairline showing how much of this line's window remains. When it
          completes and nothing has replaced the line, the frame is late. */
       if (frame.holdMs > 0) {
@@ -431,17 +568,15 @@ static void drawLyrics() {
         if (elapsed < frame.holdMs) {
           uint8_t w = (uint8_t)(((frame.holdMs - elapsed) * (SCREEN_W - 4)) /
                                 frame.holdMs);
-          u8g2.drawHLine(2, 13, w);
+          u8g2.drawHLine(2, RULE_Y + 2, w);
         }
       }
-    } else {
-      /* No timing available, so the track itself is the headline. */
-      u8g2.setFont(u8g2_font_helvB10_tf);
-      drawWrapped(frame.mainText, 28, 13, SCREEN_W - 4);
+    } else if (wrapCount <= 2) {
+      /* Only label the fallback when the title left room for it. */
       u8g2.setFont(u8g2_font_4x6_tf);
-      u8g2.drawUTF8(2, 48, strcmp(frame.lyr, "plain") == 0
-                               ? "lyrics not timed"
-                               : "no lyrics found");
+      u8g2.drawUTF8(2, BAND_BOTTOM, strcmp(frame.lyr, "plain") == 0
+                                        ? "lyrics not timed"
+                                        : "no lyrics found");
     }
   }
 
@@ -616,12 +751,7 @@ void setup() {
 
   Wire.begin();
   nfc.begin();
-  uint32_t version = nfc.getFirmwareVersion();
-  if (version) {
-    /* SAMConfig is mandatory: without it reads fail silently forever. */
-    nfc.SAMConfig();
-    nfcReady = true;
-  }
+  nfcReady = initNfc();
 
   selfTest();
 
@@ -651,9 +781,22 @@ void loop() {
     linkState = LINK_LIVE;
   }
 
+  /* Keep trying to find the reader while it is absent. Re-powering the
+     module after changing its mode switches should be enough to bring
+     taps to life without touching the firmware. */
+  /* Ten seconds, not three: each attempt stalls for the library's ACK
+     timeout while the reader is absent, and that pause is visible in the
+     animation. */
+  if (!nfcReady && now - lastNfcRetryMs >= 10000) {
+    nfc.begin();
+    nfcReady = initNfc();
+    lastNfcRetryMs = millis();
+    if (nfcReady) sendHello();  /* Tell the PC the reader just appeared. */
+  }
+
   /* Poll the reader between frames rather than every pass, so its blocking
      timeout cannot dominate the frame budget. */
-  if (now - lastNfcPollMs >= 100) {
+  if (nfcReady && now - lastNfcPollMs >= 100) {
     pollNfc();
     lastNfcPollMs = millis();
   }
