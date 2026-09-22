@@ -122,24 +122,27 @@ rather than `winsdk.windows.media.control`.
 
 ## Screens
 
-Four, cycled from the control panel or automatically while idle.
+Three, cycled from the control panel or automatically while idle.
 
 **Lyrics** — artist and title marqueed along the top, the current synced
 lyric line below, and a full-width equalizer that follows the actual audio.
 Long lines wrap and step down through three font sizes rather than being cut
-off, and a new line slides in as the old one slides out.
+off, and a new line slides in as the old one slides out. The mascot perches
+at the right, bobbing on the beat.
 
-**Beat** — the cat bouncing in time with the music, with a record sitting
-70% proud behind it and spinning only while the track plays. The bounce is
-driven by the bass bands of the live spectrum rather than a timer, so it lands
-on the beat rather than near it.
+**Stats** — CPU clock, temperature and load; GPU temperature, load and VRAM;
+and system RAM, as three rows with usage bars. Fan speed sits in the header
+with half a fan disc spinning in from the right edge, its rate following the
+reading. Unavailable values show `--` for that field alone.
 
-**Stats** — four rows: CPU clock, temperature and load; GPU temperature, load
-and VRAM; system RAM used against total; and fan speed. Unavailable readings
-show `--` for that field alone. Fan RPM needs LibreHardwareMonitor.
+**Clock** — the time and date, sent from the PC as finished strings since the
+board has no RTC of its own, alongside the board's own state: how hard the
+microcontroller is working, its uptime, and its frame rate.
 
-**Clock** — the time, sent from the PC as finished strings since the board has
-no RTC of its own, with the mascot alongside.
+The screen jumps to stats on its own when the machine starts working hard —
+above 80% on either CPU or GPU — and holds there until load falls back under
+55%. Two thresholds rather than one, so load hovering near the line cannot
+flap the display.
 
 ### The mascot
 
@@ -170,6 +173,21 @@ rolloff. Automatic gain keeps quiet tracks filling the display.
 
 Optional. Without `numpy` and `pyaudiowpatch`, or if nothing arrives for
 600ms, the device falls back to a synthetic travelling wave.
+
+### Bobbing on the beat
+
+Onsets come from positive spectral flux in the lower bands, and the gaps
+between them give a tempo. Once eight consecutive gaps agree closely the
+tempo is taken as settled and stops being re-estimated: tracking it forever
+means every vocal transient gets a vote, and a steady song would slowly drag
+its own tempo off. After that the beat grid only creeps toward onsets rather
+than following them, and a track change clears it.
+
+The phase is what goes down the wire, not the beats themselves, so a missed
+onset does not stall the animation — it keeps moving on the grid and
+resynchronises when the next one lands. The phase is advanced by
+`beat_lead_ms` to cancel the pipeline's own latency: a 1024-sample buffer at
+48kHz is 21ms before analysis even starts.
 
 ### Idling
 
@@ -221,6 +239,11 @@ in Soft-Off State (S5)*. Note ErP also disables Wake-on-LAN and USB wake.
 Stats work out of the box with no extra software: GPU figures come from
 `nvidia-smi` (installed with the NVIDIA driver), and CPU load and clock plus
 system RAM from `psutil`.
+
+Fan speed comes from the GPU through `nvidia-smi`, reported as a percentage.
+Zero is a real reading: modern cards stop the fan entirely when cool. If
+LibreHardwareMonitor is running it takes priority, since it sees every case
+fan rather than just the graphics card.
 
 **CPU temperature is the exception.** Reading a Ryzen package temperature
 needs a ring0 driver, which means
