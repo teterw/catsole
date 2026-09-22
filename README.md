@@ -122,24 +122,21 @@ rather than `winsdk.windows.media.control`.
 
 ## Screens
 
-Five, cycled from the control panel or automatically while idle.
+Four, cycled from the control panel or automatically while idle.
 
 **Lyrics** — artist and title marqueed along the top, the current synced
 lyric line below, and a full-width equalizer that follows the actual audio.
 Long lines wrap and step down through three font sizes rather than being cut
 off, and a new line slides in as the old one slides out.
 
-**Cover** — the album art as a 48×48 dithered square with a record sliding
-out from behind it, spinning only while the track plays. Tracks with no
-artwork show the mascot instead of an empty square.
+**Beat** — the cat bouncing in time with the music, with a record sitting
+70% proud behind it and spinning only while the track plays. The bounce is
+driven by the bass bands of the live spectrum rather than a timer, so it lands
+on the beat rather than near it.
 
-**Stats** — CPU clock, temperature and load; GPU temperature, load and VRAM;
-and system RAM used against total. Unavailable readings show `--` for that
-field alone.
-
-**Fans** — fan speeds with a spinning fan whose rate follows the fastest one.
-Needs LibreHardwareMonitor; without it the blades turn over slowly and the
-readout says so.
+**Stats** — four rows: CPU clock, temperature and load; GPU temperature, load
+and VRAM; system RAM used against total; and fan speed. Unavailable readings
+show `--` for that field alone. Fan RPM needs LibreHardwareMonitor.
 
 **Clock** — the time, sent from the PC as finished strings since the board has
 no RTC of its own, with the mascot alongside.
