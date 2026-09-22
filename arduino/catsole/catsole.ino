@@ -88,6 +88,10 @@ static const uint8_t EQ_BARS = 43;
 static const uint8_t EQ_BAR_W = 2;
 static const uint8_t EQ_GAP = 1;
 static const uint8_t EQ_ROW_H = 12; /* y 52..63 */
+/* Where the mascot perches on the lyrics screen, in front of the bars. */
+static const uint8_t CAT_PERCH_X = 98;
+/* Stats bars stop short of the mascot's column. */
+static const uint8_t STAT_BAR_W = 88;
 
 /* ---- link state ---------------------------------------------------- */
 enum LinkState { LINK_BOOT, LINK_WAITING, LINK_LIVE, LINK_STALE };
@@ -703,7 +707,18 @@ static void drawLyrics() {
     }
   }
 
-  drawEqualizer(frame.eq == 1 && strcmp(frame.state, "playing") == 0);
+  bool playing = strcmp(frame.state, "playing") == 0;
+  drawEqualizer(frame.eq == 1 && playing);
+
+  /* The cat stands in front of the bars rather than beside them. The
+     equalizer is decoration, so occluding its right end costs nothing,
+     where taking layout space from the lyric would cost the screen's
+     whole point. Centred text never reaches past y45, so the two do not
+     collide even on a four-line lyric. */
+  u8g2.setDrawColor(0);
+  u8g2.drawBox(CAT_PERCH_X - 2, 45, SCREEN_W - CAT_PERCH_X + 2, SCREEN_H - 45);
+  u8g2.setDrawColor(1);
+  drawCat(CAT_PERCH_X, 51, catPose(playing, false), u8g2_font_4x6_tf, 6);
 }
 
 /* Format a used/total pair held in MB as GB, or "--" if either is absent. */
@@ -729,12 +744,12 @@ static void drawStatRow(uint8_t baseline, const char *label, const char *value,
   /* An unknown load still draws the empty frame, so the row reads as a row
      rather than vanishing. */
   const uint8_t barY = baseline + 2;
-  u8g2.drawFrame(2, barY, SCREEN_W - 4, 4);
+  u8g2.drawFrame(2, barY, STAT_BAR_W, 4);
   if (!isnan(load)) {
     float pct = load;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
-    uint8_t w = (uint8_t)((pct / 100.0f) * (SCREEN_W - 8));
+    uint8_t w = (uint8_t)((pct / 100.0f) * (STAT_BAR_W - 4));
     if (w > 0) u8g2.drawBox(4, barY + 1, w, 2);
   }
 }
@@ -861,6 +876,10 @@ static void drawStats() {
   }
   drawStatRow(20, "cpu", value, frame.cpuLoad);
 
+  /* The mascot takes the column the bars gave up, vertically centred
+     against the four rows. */
+  drawCat(CAT_PERCH_X, 34, catPose(false, false), u8g2_font_4x6_tf, 6);
+
   fmtNum(tempStr, sizeof(tempStr), frame.gpuTemp, 0, "C");
   fmtPairGB(pair, sizeof(pair), frame.vramUsed, frame.vramTotal);
   snprintf(value, sizeof(value), "%s  %s", tempStr, pair);
@@ -873,14 +892,14 @@ static void drawStats() {
      is scaled against a typical case-fan ceiling, since fans report RPM
      rather than a percentage. */
   if (frame.fanCount == 0) {
-    drawStatRow(56, "fan", "-- rpm  (needs LHM)", NAN);
+    drawStatRow(56, "fan", "--  needs LHM", NAN);
   } else {
     int16_t fastest = 0;
     for (uint8_t i = 0; i < frame.fanCount; i++) {
       if (frame.fanRpm[i] > fastest) fastest = frame.fanRpm[i];
     }
     if (frame.fanCount > 1) {
-      snprintf(value, sizeof(value), "%d rpm  +%d more", fastest,
+      snprintf(value, sizeof(value), "%drpm +%d", fastest,
                frame.fanCount - 1);
     } else {
       snprintf(value, sizeof(value), "%d rpm", fastest);

@@ -145,8 +145,14 @@ no RTC of its own, with the mascot alongside.
 
 An original ASCII cat with five poses. It blinks on a deliberately uneven
 rhythm so it does not read as a loop, perks up when a track starts, and curls
-up when the PC is away. It appears on the boot screen, the idle screen, the
-clock, and wherever a cover is missing.
+up when the PC is away.
+
+It appears on every screen. On the lyrics screen it stands *in front* of the
+equalizer rather than beside it: the bars are decoration, so occluding their
+right end costs nothing, where taking layout space from the lyric would cost
+the screen its point. On stats the bars stop short to give it a column, since
+four rows of readings are not decoration. On the beat screen it is the
+subject, and on the clock it keeps the time company.
 
 The boot sequence is a white flash, the cat rising from below and easing into
 place, two uneven blinks, then the name typing in beside it.

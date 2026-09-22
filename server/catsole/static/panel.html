@@ -225,6 +225,8 @@
 
   // 43 bars at 2px with 1px gaps fills exactly 128px, matching the firmware.
   var EQ_BARS = 43, EQ_BAR_W = 2, EQ_GAP = 1, EQ_ROW_H = 12;
+  // Where the mascot perches, and how far the stats bars stop short.
+  var CAT_PERCH_X = 98, STAT_BAR_W = 88;
   for (var i = 0; i < EQ_BARS; i++) { eq.push(1); eqPhase.push(Math.random() * 6.28); }
 
   // Lyric slide transition, mirroring the firmware.
@@ -358,6 +360,13 @@
     }
 
     drawEqualizer(frame.state === "playing" && frame.eq === 1);
+
+    // The cat stands in front of the bars: the equalizer is decoration,
+    // so occluding its right end costs nothing.
+    ctx.fillStyle = GLASS;
+    ctx.fillRect(CAT_PERCH_X - 2, 45, W - CAT_PERCH_X + 2, H - 45);
+    drawCatArt(CAT[labPose(frame.state === "playing", false)],
+               CAT_PERCH_X, 51, 6, 6, ctx);
   }
 
   function pairGB(used, total) {
@@ -369,7 +378,7 @@
     ctx.fillStyle = PHOSPHOR;
     ctx.fillText(label, 2, baseline);
     ctx.fillText(value, 24, baseline);
-    drawBar(2, baseline + 2, 124, 4, load);
+    drawBar(2, baseline + 2, STAT_BAR_W, 4, load);
   }
 
   function drawStats(frame) {
@@ -381,6 +390,8 @@
     ctx.fillRect(0, 11, W, 1);
 
     // Three rows on a 17px pitch, matching the firmware.
+    drawCatArt(CAT[labPose(false, false)], CAT_PERCH_X, 34, 6, 6, c);
+
     statRow(20, "cpu",
       num(cpu.temp) + (cpu.temp === null || cpu.temp === undefined ? "" : "C") + "  " +
       (cpu.clock ? (cpu.clock / 1000).toFixed(2) + "GHz" : "--"), cpu.load);
@@ -393,11 +404,11 @@
 
     var fans = frame.fans || [];
     if (!fans.length) {
-      statRow(56, "fan", "-- rpm  (needs LHM)", null);
+      statRow(56, "fan", "--  needs LHM", null);
     } else {
       var fastest = 0;
       fans.forEach(function (f) { if (f.rpm > fastest) fastest = f.rpm; });
-      var label = fastest + " rpm" + (fans.length > 1 ? "  +" + (fans.length - 1) + " more" : "");
+      var label = fastest + "rpm" + (fans.length > 1 ? " +" + (fans.length - 1) : "");
       statRow(56, "fan", label, Math.min(100, fastest * 100 / 2500));
     }
   }
