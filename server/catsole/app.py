@@ -70,7 +70,9 @@ class DeskConsole:
         self.audio = AudioLevels()
         # Seeded a full interval out, so the configured start mode is
         # actually shown rather than rotated past on the first tick.
-        self._rotate_at = time.monotonic() + config.idle_rotate_s
+        self._rotate_at = time.monotonic() + float(
+            config.rotate_hold_s.get(self.mode, config.idle_rotate_s)
+        )
         self._manual_until = 0.0
         self._was_playing = False
         self._busy = False
@@ -99,6 +101,12 @@ class DeskConsole:
         log.info("device announced firmware %s", self.device_firmware)
         # Answer immediately so the display leaves its waiting state.
         self.push_frame()
+
+    def _hold_for(self, mode: str) -> float:
+        """How long a screen stays up during idle rotation."""
+        return float(
+            self.config.rotate_hold_s.get(mode, self.config.idle_rotate_s)
+        )
 
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
@@ -378,11 +386,13 @@ class DeskConsole:
                     self.mode = next_mode(self.mode)
                     log.debug("idle rotation -> %s", self.mode)
                     self.push_frame()
-                    self._rotate_at = now + self.config.idle_rotate_s
+                    # The dwell belongs to the screen being shown, not the
+                    # one just left.
+                    self._rotate_at = now + self._hold_for(self.mode)
             else:
                 # Keep the timer fresh so rotation starts a full
                 # interval after the music stops, not immediately.
-                self._rotate_at = now + self.config.idle_rotate_s
+                self._rotate_at = now + self._hold_for(self.mode)
 
         if self.refresh_requested:
             self.refresh_requested = False

@@ -273,3 +273,13 @@ def test_a_hand_picked_mode_survives_a_load_spike(console):
     console.hardware.stats = load_stats(cpu=99.0)
     console.tick()
     assert console.mode == "clock"
+
+
+def test_clock_rests_longer_than_the_others(console):
+    assert console._hold_for("clock") == 20.0
+    assert console._hold_for("lyrics") == console.config.idle_rotate_s
+    assert console._hold_for("stats") == console.config.idle_rotate_s
+
+
+def test_unknown_screen_falls_back_to_the_default_dwell(console):
+    assert console._hold_for("nonesuch") == console.config.idle_rotate_s

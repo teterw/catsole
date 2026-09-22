@@ -38,6 +38,9 @@ class Config:
     # With nothing playing the device cycles screens on its own.
     # Zero disables it.
     idle_rotate_s: float = 9.0
+    # Screens worth resting on get longer than the default. The clock
+    # is something you read; the others are glanceable.
+    rotate_hold_s: dict = field(default_factory=lambda: {"clock": 20.0})
 
     # The screen jumps to stats when the machine starts working hard,
     # and holds there until it settles. Two thresholds rather than
