@@ -117,6 +117,9 @@ struct Frame {
   uint32_t holdMs;
   uint32_t receivedAtMs;
   uint32_t posMs;   /* track position when this frame was built */
+  char timeText[8];  /* clock screen; the board has no RTC of its own */
+  char secText[4];
+  char dateText[20];
   uint32_t durMs;   /* track length, 0 when unknown */
 
   float cpuTemp, cpuLoad, cpuClock;
@@ -354,6 +357,9 @@ static void handleLine(const char *line) {
   frame.eq = doc["eq"] | 0;
   frame.holdMs = doc["hold_ms"] | 0UL;
   frame.posMs = doc["pos"] | 0UL;
+  copyField(frame.timeText, sizeof(frame.timeText), doc["time"] | "");
+  copyField(frame.secText, sizeof(frame.secText), doc["sec"] | "");
+  copyField(frame.dateText, sizeof(frame.dateText), doc["date"] | "");
   frame.durMs = doc["dur"] | 0UL;
   frame.receivedAtMs = millis();
 
@@ -821,6 +827,34 @@ static void drawCover() {
   }
 }
 
+/* Clock screen.
+ *
+ * The board has no RTC, so this is only meaningful while the PC is
+ * feeding it -- which is exactly why the time is sent as finished strings
+ * rather than a timestamp the device would have to keep running itself.
+ * When the link goes stale the whole frame dims like any other screen,
+ * which is the honest thing to show: a clock that might be wrong. */
+static void drawClock() {
+  if (frame.timeText[0] == 0) return;
+
+  u8g2.setFont(u8g2_font_logisoso24_tn);
+  uint16_t w = u8g2.getUTF8Width(frame.timeText);
+  int16_t x = 4;
+  u8g2.drawUTF8(x, 40, frame.timeText);
+
+  /* Seconds sit small beside the hours, so the eye is not dragged to
+     something changing every second. */
+  u8g2.setFont(u8g2_font_6x12_tf);
+  u8g2.drawUTF8(x + w + 4, 40, frame.secText);
+
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawUTF8(x + 1, 56, frame.dateText);
+
+  /* The cat keeps the clock company rather than leaving dead space. */
+  drawCat(92, 12, catPose(strcmp(frame.state, "playing") == 0, false),
+          u8g2_font_4x6_tf, 7);
+}
+
 static void drawStats() {
   char value[40];
   char tempStr[12];
@@ -896,6 +930,7 @@ static void render() {
     case LINK_STALE:
       if (strcmp(frame.mode, "stats") == 0) drawStats();
       else if (strcmp(frame.mode, "cover") == 0) drawCover();
+      else if (strcmp(frame.mode, "clock") == 0) drawClock();
       else drawLyrics();
       break;
   }

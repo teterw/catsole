@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime
 
 from .artwork import art_signature, encode_art, render_1bit
 from .audio import AudioLevels
@@ -25,7 +26,16 @@ from .media import MediaReader, NowPlaying
 
 log = logging.getLogger(__name__)
 
-MODES = ("lyrics", "cover", "stats")
+MODES = ("lyrics", "cover", "stats", "clock")
+
+
+def next_mode(current: str) -> str:
+    """Advance to the next mode, recovering to the first on anything odd."""
+    try:
+        index = MODES.index(current)
+    except ValueError:
+        return MODES[0]
+    return MODES[(index + 1) % len(MODES)]
 
 
 class DeskConsole:
@@ -61,6 +71,8 @@ class DeskConsole:
         self.art_b64 = ""
         self.art_sig = ""
         self.art_sent = False
+        self._rotate_at = 0.0
+        self._manual_until = 0.0
 
         self._track_key = None
         self._fetching = False
@@ -93,6 +105,9 @@ class DeskConsole:
         if mode not in MODES:
             return
         self.mode = mode
+        # A deliberate choice should stick, so pause the idle rotation
+        # rather than having the screen move on a few seconds later.
+        self._manual_until = time.monotonic() + self.config.manual_hold_s
         self.push_frame()  # Reflect the change now, not on the next tick.
 
     def force_refresh(self) -> None:
@@ -163,7 +178,23 @@ class DeskConsole:
 
     # ---- frame building --------------------------------------------------
 
+    def _clock_frame(self) -> dict:
+        now = datetime.now()
+        playing = self.now_playing
+        return {
+            "t": "frame",
+            "mode": "clock",
+            "time": now.strftime("%H:%M"),
+            "sec": now.strftime("%S"),
+            "date": now.strftime("%a %d %b").lower(),
+            "state": "playing"
+            if playing is not None and playing.is_playing
+            else "idle",
+        }
+
     def build_frame(self) -> dict:
+        if self.mode == "clock":
+            return self._clock_frame()
         if self.mode == "stats":
             return self._stats_frame()
         frame = self._lyrics_frame()
@@ -276,6 +307,23 @@ class DeskConsole:
             if playing and self.audio.available:
                 self.link.send({"t": "eq", "b": self.audio.hex_levels()})
             self._next_eq = now + self.config.eq_interval_s
+
+        if self.config.idle_rotate_s > 0 and now >= self._manual_until:
+            playing = (
+                self.now_playing is not None
+                and not self.now_playing.is_empty
+                and self.now_playing.is_playing
+            )
+            if not playing:
+                if now >= self._rotate_at:
+                    self.mode = next_mode(self.mode)
+                    log.debug("idle rotation -> %s", self.mode)
+                    self.push_frame()
+                    self._rotate_at = now + self.config.idle_rotate_s
+            else:
+                # Keep the timer fresh so rotation starts a full
+                # interval after the music stops, not immediately.
+                self._rotate_at = now + self.config.idle_rotate_s
 
         if self.art_b64 and not self.art_sent:
             if self.link.send({"t": "art", "d": self.art_b64}):

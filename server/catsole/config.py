@@ -29,6 +29,12 @@ class Config:
     # 20Hz: fast enough that the bars track transients.
     eq_interval_s: float = 0.05
 
+    # With nothing playing the device cycles screens on its own.
+    # Zero disables it.
+    idle_rotate_s: float = 9.0
+    # How long a hand-picked mode sticks before rotation resumes.
+    manual_hold_s: float = 90.0
+
     # Positive values push lyrics later, negative pull them earlier. Some
     # players report position ahead of what you actually hear.
     lyric_offset_ms: int = 0
