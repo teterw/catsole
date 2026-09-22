@@ -804,14 +804,17 @@ static void drawStatRow(uint8_t baseline, const char *label, const char *value,
 
   /* An unknown load still draws the empty frame, so the row reads as a row
      rather than vanishing. */
+  /* The fill is inset on every side. At a 3px fill inside a 5px frame it
+     touched both borders, so the bar read as one solid blob instead of a
+     level inside a track. */
   const uint8_t barY = baseline + 2;
-  u8g2.drawFrame(2, barY, STAT_BAR_W, 5);
+  u8g2.drawFrame(2, barY, STAT_BAR_W, 6);
   if (!isnan(load)) {
     float pct = load;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     uint8_t w = (uint8_t)((pct / 100.0f) * (STAT_BAR_W - 4));
-    if (w > 0) u8g2.drawBox(4, barY + 1, w, 3);
+    if (w > 0) u8g2.drawBox(4, barY + 2, w, 2);
   }
 }
 

@@ -69,6 +69,7 @@ class DeskConsole:
         self.audio = AudioLevels()
         self._rotate_at = 0.0
         self._manual_until = 0.0
+        self._was_playing = False
 
         self._track_key = None
         self._fetching = False
@@ -312,12 +313,25 @@ class DeskConsole:
                 })
             self._next_eq = now + self.config.eq_interval_s
 
+        # Windows drops the media session while audio is still coming out,
+        # so trusting it alone let the screen rotate mid-song. Sound on the
+        # output is the more honest signal for "something is playing".
+        playing = (
+            self.now_playing is not None
+            and not self.now_playing.is_empty
+            and self.now_playing.is_playing
+        ) or (self.audio.available and not self.audio.silent)
+
+        # Music starting pulls the screen back to the lyrics, unless a mode
+        # was hand-picked recently.
+        if playing and not self._was_playing and now >= self._manual_until:
+            if self.mode != "lyrics":
+                self.mode = "lyrics"
+                log.debug("playback started -> lyrics")
+                self.push_frame()
+        self._was_playing = playing
+
         if self.config.idle_rotate_s > 0 and now >= self._manual_until:
-            playing = (
-                self.now_playing is not None
-                and not self.now_playing.is_empty
-                and self.now_playing.is_playing
-            )
             if not playing:
                 if now >= self._rotate_at:
                     self.mode = next_mode(self.mode)
