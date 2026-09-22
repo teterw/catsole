@@ -26,6 +26,8 @@ class Config:
     media_poll_s: float = 0.25
     stats_poll_s: float = 1.0
     frame_interval_s: float = 0.25
+    # 20Hz: fast enough that the bars track transients.
+    eq_interval_s: float = 0.05
 
     # Positive values push lyrics later, negative pull them earlier. Some
     # players report position ahead of what you actually hear.

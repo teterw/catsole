@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 
+from .audio import AudioLevels
 from .config import Config
 from .hardware import HardwareReader, empty_stats
 from .link import NullLink, SerialLink
@@ -55,6 +56,7 @@ class DeskConsole:
         self.lyrics = Lyrics(kind="none")
         self.refresh_requested = False
         self.device_firmware = ""
+        self.audio = AudioLevels()
 
         self._track_key = None
         self._fetching = False
@@ -63,6 +65,7 @@ class DeskConsole:
         self._next_media = 0.0
         self._next_stats = 0.0
         self._next_frame = 0.0
+        self._next_eq = 0.0
 
     # ---- events from the device -----------------------------------------
 
@@ -235,6 +238,18 @@ class DeskConsole:
             self.stats = self.hardware.poll()
             self._next_stats = now + self.config.stats_poll_s
 
+        # Spectrum goes out far more often than full frames. A meter that
+        # lags the music reads as broken, and the payload is tiny.
+        if now >= self._next_eq:
+            playing = (
+                self.mode == "lyrics"
+                and self.now_playing is not None
+                and self.now_playing.is_playing
+            )
+            if playing and self.audio.available:
+                self.link.send({"t": "eq", "b": self.audio.hex_levels()})
+            self._next_eq = now + self.config.eq_interval_s
+
         if self.refresh_requested:
             self.refresh_requested = False
             # A hold on a track whose lyrics were not found is worth a retry.
@@ -252,6 +267,7 @@ class DeskConsole:
 
     def run(self) -> None:
         self.link.start()
+        self.audio.start()
         log.info("desk-console running; mode=%s", self.mode)
         try:
             while not self._stop.is_set():
@@ -270,6 +286,10 @@ class DeskConsole:
             pass
         try:
             self.media.close()
+        except Exception:
+            pass
+        try:
+            self.audio.stop()
         except Exception:
             pass
 
@@ -300,4 +320,10 @@ class DeskConsole:
             "lyrics_kind": self.lyrics.kind,
             "stats": self.stats,
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
+            "audio": {
+                "available": self.audio.available,
+                "device": self.audio.device_name,
+                "levels": self.audio.levels(),
+                "error": self.audio.last_error,
+            },
         }

@@ -130,6 +130,15 @@
 
   .muted { color: var(--dim); }
 
+  .lab-title {
+    margin: 34px 0 2px;
+    font-size: 13px;
+    font-weight: 600;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+  }
+  .lab-sub { margin: 0 0 14px; color: var(--dim); font-size: 12px; }
+
   .note {
     margin-top: 24px;
     padding-top: 14px;
@@ -172,6 +181,24 @@
   </dl>
 
   <p class="note" id="note">Switch modes with the buttons above.</p>
+
+  <h2 class="lab-title">lab</h2>
+  <p class="lab-sub">Preview screens and animations without touching the device.</p>
+
+  <div class="controls">
+    <button data-scene="boot">boot</button>
+    <button data-scene="idle">idle</button>
+    <button data-scene="lyrics">lyrics</button>
+    <button data-scene="stats">stats</button>
+    <button data-scene="stale">no link</button>
+    <button data-scene="poses">poses</button>
+  </div>
+
+  <div class="screen">
+    <canvas id="lab" width="128" height="64" role="img"
+            aria-label="Animation preview"></canvas>
+  </div>
+
 
 </div>
 
@@ -475,6 +502,146 @@
   document.getElementById("btn-refresh").addEventListener("click", function () {
     fetch("/api/refresh", { method: "POST" }).then(poll);
   });
+
+  // ---- lab: preview scenes and animations -----------------------------
+
+  var labCanvas = document.getElementById("lab");
+  var lx = labCanvas.getContext("2d");
+  var scene = "boot";
+  var sceneStart = Date.now();
+  var catChoice = 0;
+
+  // Mascot poses, mirroring the firmware. Index order matches CAT_ART there.
+  var CAT = [
+    ["/\\___/\\", "( o.o )", " > ^ < "],
+    ["/\\___/\\", "( -.- )", " > ^ < "],
+    ["/\\___/\\", "( ^.^ )", " > ~ < "],
+    ["/\\___/\\", "( u.u )", " > _ < "],
+    ["/\\___/\\", "( -.o )", " > ^ < "]
+  ];
+  var POSE_NAMES = ["idle", "blink", "music", "asleep", "squint"];
+
+  // Boot art candidates. B and C are originals drawn with open contours.
+  var BOOT_ART = [CAT[0]];
+
+  function mono(px) {
+    return px + "px " + getComputedStyle(document.body).fontFamily;
+  }
+
+  function drawCatArt(rows, x, y, px, lineH) {
+    lx.font = mono(px);
+    lx.fillStyle = PHOSPHOR;
+    for (var i = 0; i < rows.length; i++) lx.fillText(rows[i], x, y + i * lineH);
+  }
+
+  function labClear() {
+    lx.fillStyle = GLASS;
+    lx.fillRect(0, 0, 128, 64);
+  }
+
+  function labPose(playing, resting) {
+    if (resting) return 3;
+    var t = Date.now();
+    if ((t % 4300) < 160) return 1;
+    if ((t % 7100) < 130) return 1;
+    if ((t % 11300) < 900) return 4;
+    return playing ? 2 : 0;
+  }
+
+  // Replays the firmware's boot sequence on the same timeline.
+  function sceneBoot(t) {
+    var art = BOOT_ART[catChoice];
+    var lineH = 11, px = 10;
+    var w = art[0].length * (px * 0.6);
+    var cx = Math.max(2, (128 - w) / 2);
+    var restY = art.length > 3 ? 14 : 20;
+
+    if (t < 120) { lx.fillStyle = PHOSPHOR; lx.fillRect(0, 0, 128, 64); return; }
+    t -= 120;
+
+    if (t < 650) {                       // rise, easing out
+      var q = 1 - (t / 650), eased = 1 - q * q * q;
+      var y = (64 + 14) - eased * ((64 + 14) - restY);
+      drawCatArt(art, cx, y, px, lineH);
+      return;
+    }
+    t -= 650;
+
+    if (t < 690) {                       // two uneven blinks
+      var blink = (t < 110) || (t > 280 && t < 370);
+      var rows = (catChoice === 0 && blink) ? CAT[1] : art;
+      drawCatArt(rows, cx, restY, px, lineH);
+      return;
+    }
+    t -= 690;
+
+    var title = "catsole";               // name types in
+    var n = Math.min(title.length, Math.floor(t / 65) + 1);
+    drawCatArt(n >= title.length && catChoice === 0 ? CAT[2] : art, cx, restY, px, lineH);
+    lx.font = "600 " + mono(11).slice(4);
+    lx.fillStyle = PHOSPHOR;
+    var text = title.slice(0, n);
+    lx.fillText(text, (128 - lx.measureText(text).width) / 2, 62);
+  }
+
+  function sceneIdle() {
+    drawCatArt(CAT[labPose(false, false)], 6, 24, 10, 11);
+    lx.font = mono(7);
+    lx.fillStyle = PHOSPHOR;
+    lx.fillText("nothing", 56, 34);
+    lx.fillText("playing", 56, 44);
+  }
+
+  function scenePoses() {
+    lx.font = mono(7);
+    for (var i = 0; i < CAT.length; i++) {
+      var col = (i % 3) * 43 + 2, row = Math.floor(i / 3) * 32;
+      drawCatArt(CAT[i], col, row + 10, 7, 8);
+      lx.fillStyle = PHOSPHOR;
+      lx.font = mono(6);
+      lx.fillText(POSE_NAMES[i], col + 2, row + 30);
+    }
+  }
+
+  function labRender() {
+    labClear();
+    var t = Date.now() - sceneStart;
+    if (scene === "boot") sceneBoot(t % 3400);
+    else if (scene === "idle") sceneIdle();
+    else if (scene === "poses") scenePoses();
+    else if (scene === "stats") {
+      var f = { cpu: { temp: 61, load: 34, clock: 4850 },
+                gpu: { temp: 68, load: 99, vram_used: 4211, vram_total: 16380 },
+                ram: { used: 15398, total: 32214, percent: 47.8 } };
+      var save = ctx; ctx = lx; drawStats(f); ctx = save;
+    } else {
+      var fr = { meta: "An Artist - A Rather Long Track Title",
+                 main: "placeholder line for previewing the layout",
+                 state: "playing", eq: 1, lyr: "synced" };
+      var save2 = ctx; ctx = lx; drawLyrics(fr); ctx = save2;
+      if (scene === "stale") {
+        lx.fillStyle = GLASS;
+        for (var y = 0; y < 64; y++)
+          for (var x = (y % 2); x < 128; x += 2) lx.fillRect(x, y, 1, 1);
+        lx.fillStyle = AMBER; lx.fillRect(0, 0, 34, 9);
+        lx.fillStyle = GLASS; lx.font = mono(7);
+        lx.fillText("no link", 3, 7);
+      }
+    }
+    requestAnimationFrame(labRender);
+  }
+
+  document.querySelectorAll("button[data-scene]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      scene = b.dataset.scene;
+      sceneStart = Date.now();
+      document.querySelectorAll("button[data-scene]").forEach(function (o) {
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+    });
+  });
+
+  requestAnimationFrame(labRender);
 
   poll();
   setInterval(poll, 1000);

@@ -131,6 +131,15 @@ static uint32_t lastMarqueeMs = 0;
 static float eqHeight[EQ_BARS];
 static uint16_t eqPhase[EQ_BARS];
 
+/* Spectrum from the PC: sixteen bands, one hex digit each, pushed far
+   faster than full frames because a meter that lags is worse than one
+   that is merely approximate. If nothing arrives the bars fall back to
+   the synthetic wave, so an old PC-side build still looks alive. */
+static const uint8_t EQ_BANDS = 16;
+static const uint32_t EQ_FRESH_MS = 600;
+static uint8_t eqBand[EQ_BANDS];
+static uint32_t lastEqMs = 0;
+
 /* A lyric line that swaps instantly is jarring at this size, so the
    outgoing line is kept around long enough to slide it out while the new
    one slides in beneath it. */
@@ -238,6 +247,24 @@ static void handleLine(const char *line) {
   const char *type = doc["t"] | "";
 
   if (strcmp(type, "ping") == 0) {
+    lastFrameMs = millis();
+    everReceived = true;
+    return;
+  }
+
+  if (strcmp(type, "eq") == 0) {
+    const char *bands = doc["b"] | "";
+    for (uint8_t i = 0; i < EQ_BANDS && bands[i]; i++) {
+      char c = bands[i];
+      uint8_t v = 0;
+      if (c >= '0' && c <= '9') v = (uint8_t)(c - '0');
+      else if (c >= 'a' && c <= 'f') v = (uint8_t)(c - 'a' + 10);
+      else if (c >= 'A' && c <= 'F') v = (uint8_t)(c - 'A' + 10);
+      eqBand[i] = v;
+    }
+    lastEqMs = millis();
+    /* Spectrum counts as traffic, so a quiet passage does not look like a
+       dropped link. */
     lastFrameMs = millis();
     everReceived = true;
     return;
@@ -498,15 +525,78 @@ static void drawWrapped(const WrappedText &wrapped, int16_t yShift) {
   }
 }
 
+/* ==================================================================== *
+ * mascot
+ *
+ * An original character, drawn as text glyphs rather than a bitmap so it
+ * keeps the look of something typed. Three rows, seven columns; at the
+ * 4x6 face that is 28x18px, small enough to sit in a corner of any
+ * screen, and at 6x12 it is 42x36px, which carries the boot screen.
+ * ==================================================================== */
+
+enum CatPose {
+  CAT_IDLE,
+  CAT_BLINK,
+  CAT_HAPPY,
+  CAT_SLEEP,
+  CAT_SQUINT,
+  CAT_POSE_COUNT
+};
+
+static const char *const CAT_ART[CAT_POSE_COUNT][3] = {
+    /* Ears sit at the outer corners, over the sides of the head. Tucked
+       inboard they landed directly above the eyes and read as wrong. */
+    {"/\\___/\\", "( o.o )", " > ^ < "},  /* idle    */
+    {"/\\___/\\", "( -.- )", " > ^ < "},  /* blink   */
+    {"/\\___/\\", "( ^.^ )", " > ~ < "},  /* music   */
+    {"/\\___/\\", "( u.u )", " > _ < "},  /* asleep  */
+    {"/\\___/\\", "( -.o )", " > ^ < "},  /* squint  */
+};
+
+static void drawCat(int16_t x, int16_t y, uint8_t pose, const uint8_t *font,
+                    uint8_t lineH) {
+  if (pose >= CAT_POSE_COUNT) pose = CAT_IDLE;
+  u8g2.setFont(font);
+  for (uint8_t row = 0; row < 3; row++) {
+    u8g2.drawUTF8(x, y + row * lineH, CAT_ART[pose][row]);
+  }
+}
+
+/* Choose a pose from the clock, so the cat is never quite still.
+ *
+ * Blinks are short and irregular, which is what stops it reading as a
+ * loop. A cat that blinks on a tidy two-second beat looks mechanical. */
+static uint8_t catPose(bool playing, bool resting) {
+  if (resting) return CAT_SLEEP;
+
+  uint32_t t = millis();
+  /* Two offset cycles give an uneven blink rhythm without any randomness
+     to store between frames. */
+  if ((t % 4300) < 160) return CAT_BLINK;
+  if ((t % 7100) < 130) return CAT_BLINK;
+  if ((t % 11300) < 900) return CAT_SQUINT;
+  return playing ? CAT_HAPPY : CAT_IDLE;
+}
+
 static void drawEqualizer(bool active) {
   for (uint8_t i = 0; i < EQ_BARS; i++) {
     float target;
-    if (active) {
-      /* Cosmetic: there is no microphone on this build, so rather than
-         pretend to follow audio the row runs a travelling wave. Two sines
+    bool live = (millis() - lastEqMs) < EQ_FRESH_MS;
+
+    if (active && live) {
+      /* Real spectrum. Sixteen bands stretched across forty-three bars,
+         interpolated so neighbours stay smooth instead of stepping in
+         blocks of three. */
+      float pos = (i * (float)(EQ_BANDS - 1)) / (float)(EQ_BARS - 1);
+      uint8_t lo = (uint8_t)pos;
+      uint8_t hi = (lo + 1 < EQ_BANDS) ? (uint8_t)(lo + 1) : lo;
+      float frac = pos - lo;
+      float v = eqBand[lo] * (1.0f - frac) + eqBand[hi] * frac;
+      target = 1.0f + (v / (float)(EQ_BANDS - 1)) * (EQ_ROW_H - 1);
+    } else if (active) {
+      /* No spectrum arriving, so fall back to a travelling wave. Two sines
          at different rates, offset by bar index, keep neighbours related
-         so it reads as something sweeping the screen rather than as
-         independent noise. The per-bar jitter stops it looking synthetic. */
+         so it reads as something sweeping the screen rather than noise. */
       float t = millis() / 240.0f;
       float x = i * 0.34f + (eqPhase[i] / 900.0f);
       float v = fabs(sin(t + x)) * 0.62f + fabs(sin(t * 0.47f + x * 1.9f)) * 0.38f;
@@ -530,8 +620,11 @@ static void drawLyrics() {
   bool idle = strcmp(frame.state, "idle") == 0;
 
   if (idle) {
-    u8g2.setFont(u8g2_font_6x12_tf);
-    u8g2.drawUTF8(2, 34, "nothing playing");
+    /* Nothing to show, so the mascot gets the space. */
+    drawCat(6, 24, catPose(false, false), u8g2_font_6x12_tf, 11);
+    u8g2.setFont(u8g2_font_5x7_tf);
+    u8g2.drawUTF8(56, 34, "nothing");
+    u8g2.drawUTF8(56, 44, "playing");
   } else if (frame.mainText[0] != 0) {
     /* Rebuild the layout only when the line actually changed. The outgoing
        line's layout is already finished, so it is copied rather than
@@ -710,36 +803,66 @@ static void render() {
 }
 
 /* ==================================================================== *
- * boot self-test
+ * boot sequence
  *
- * Makes the correct DISPLAY_VARIANT obvious on first upload: the border
- * must be crisp against the panel edge, the checkerboard must read as an
- * even grey rather than as bands, and the fill must be uniform.
+ * Opens with a full-white flash, which doubles as the panel check: if
+ * nothing appears at all it is wiring, not configuration. Then the cat
+ * rises into place, blinks, and the name types in beside it.
  * ==================================================================== */
-static void selfTest() {
+static void bootAnimation() {
+  const char *title = "catsole";
+  const uint8_t titleLen = 7;
+  const int16_t catX = 43;
+  const int16_t restY = 20;
+  const uint8_t lineH = 11;
+
   u8g2.clearBuffer();
   u8g2.drawBox(0, 0, SCREEN_W, SCREEN_H);
   u8g2.sendBuffer();
-  delay(250);
+  delay(60);
 
-  u8g2.clearBuffer();
-  u8g2.drawFrame(0, 0, SCREEN_W, SCREEN_H);
-  for (uint8_t y = 16; y < 48; y++) {
-    for (uint8_t x = 8 + (y & 1); x < 120; x += 2) u8g2.drawPixel(x, y);
+  /* Rise from below the bottom edge, easing out so it settles. */
+  uint32_t start = millis();
+  for (;;) {
+    uint32_t t = millis() - start;
+    if (t >= 650) break;
+    float q = 1.0f - (t / 650.0f);
+    float eased = 1.0f - (q * q * q);
+    int16_t y = (int16_t)((SCREEN_H + 14) - eased * ((SCREEN_H + 14) - restY));
+    u8g2.clearBuffer();
+    drawCat(catX, y, CAT_IDLE, u8g2_font_6x12_tf, lineH);
+    u8g2.sendBuffer();
   }
-  u8g2.sendBuffer();
-  delay(600);
 
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x12_tf);
-  u8g2.drawUTF8(2, 20, "desk-console");
-  u8g2.setFont(u8g2_font_5x7_tf);
-  char line[32];
-  snprintf(line, sizeof(line), "fw %s  variant %d", FIRMWARE_VERSION,
-           DISPLAY_VARIANT);
-  u8g2.drawUTF8(2, 34, line);
-  u8g2.sendBuffer();
-  delay(900);
+  /* Two blinks, unevenly spaced so it reads as alive rather than timed. */
+  const uint16_t blinkHold[2] = {110, 90};
+  const uint16_t blinkGap[2] = {170, 320};
+  for (uint8_t i = 0; i < 2; i++) {
+    u8g2.clearBuffer();
+    drawCat(catX, restY, CAT_BLINK, u8g2_font_6x12_tf, lineH);
+    u8g2.sendBuffer();
+    delay(blinkHold[i]);
+    u8g2.clearBuffer();
+    drawCat(catX, restY, CAT_IDLE, u8g2_font_6x12_tf, lineH);
+    u8g2.sendBuffer();
+    delay(blinkGap[i]);
+  }
+
+  /* Name types in, and the cat perks up once it is finished. */
+  char buf[16];
+  for (uint8_t n = 1; n <= titleLen; n++) {
+    memcpy(buf, title, n);
+    buf[n] = 0;
+    u8g2.clearBuffer();
+    drawCat(catX, restY, n >= titleLen ? CAT_HAPPY : CAT_IDLE,
+            u8g2_font_6x12_tf, lineH);
+    u8g2.setFont(u8g2_font_7x13B_tf);
+    uint16_t w = u8g2.getUTF8Width(buf);
+    u8g2.drawUTF8((SCREEN_W - w) / 2, 62, buf);
+    u8g2.sendBuffer();
+    delay(65);
+  }
+  delay(600);
 }
 
 /* ==================================================================== *
@@ -761,7 +884,7 @@ void setup() {
   u8g2.setFontMode(1);
   u8g2.enableUTF8Print();
 
-  selfTest();
+  bootAnimation();
 
   linkState = LINK_WAITING;
   lastFrameMs = millis();
