@@ -112,9 +112,17 @@ immediate re-poll. The device itself has no input.
 | LIVE | frame within 4s | normal mode rendering |
 | STALE | more than 4s since last frame | last frame XOR-dithered to a true dim, blinking `NO LINK` badge with seconds-stale counter |
 | IDLE | LIVE but nothing playing | equalizer decays to a flat line |
+| SLEEP | more than 3min since last frame | panel powered off entirely; wakes on the next frame |
 
 The disconnected state must read as deliberate, not as a frozen or blank
 screen. This is an explicit design requirement, not a nicety.
+
+Sleep is the exception, and it is about hardware rather than appearance.
+USB ports on many motherboards keep supplying power in soft-off, so the
+board can run all night after the PC shuts down. The MCU is indifferent to
+that; the OLED is not, since brightness decays with hours lit and static
+content burns in. After three minutes without frames the panel is powered
+off and the state is announced on the link, so the PC can observe it.
 
 ## PC-side modules
 

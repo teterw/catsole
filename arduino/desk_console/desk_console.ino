@@ -67,6 +67,16 @@ static const uint16_t FRAME_INTERVAL_MS = 33;   /* ~30fps */
 static const uint32_t STALE_AFTER_MS = 4000;    /* link considered dead */
 static const uint32_t HELLO_INTERVAL_MS = 1500; /* until first frame lands */
 
+/* Blank the panel entirely once the PC has been gone this long.
+ *
+ * The microcontroller is happy running indefinitely, but an OLED is not:
+ * brightness decays with hours lit, and static content burns in
+ * permanently. The stats labels and the "no link" badge sit in fixed
+ * pixels, so a board left powered overnight -- which happens when the USB
+ * port keeps supplying power in soft-off -- would slowly etch them into
+ * the panel. Sleeping costs nothing and wakes instantly on the next frame. */
+static const uint32_t SLEEP_AFTER_MS = 180000; /* 3 minutes */
+
 /* ---- screen geometry ---------------------------------------------- */
 static const uint8_t SCREEN_W = 128;
 static const uint8_t SCREEN_H = 64;
@@ -86,6 +96,7 @@ static LinkState linkState = LINK_BOOT;
 static uint32_t lastFrameMs = 0;
 static uint32_t lastHelloMs = 0;
 static bool everReceived = false;
+static bool displayAsleep = false;
 
 /* ---- current frame -------------------------------------------------- */
 struct Frame {
@@ -170,6 +181,14 @@ static void sendHello() {
   Serial.print(F(FIRMWARE_VERSION));
   Serial.print(F("\",\"variant\":"));
   Serial.print(DISPLAY_VARIANT);
+  Serial.println(F("}"));
+}
+
+/* Announced on both edges, so the panel's power state is observable from
+   the PC rather than only visible by looking at the desk. */
+static void sendSleepState(bool asleep) {
+  Serial.print(F("{\"t\":\"display\",\"asleep\":"));
+  Serial.print(asleep ? F("true") : F("false"));
   Serial.println(F("}"));
 }
 
@@ -691,6 +710,20 @@ void loop() {
   } else {
     linkState = LINK_LIVE;
   }
+
+  /* Blank the panel once the PC has been gone a while, and bring it back
+     the moment anything arrives. Driven by time since the last frame, so
+     it covers both a PC that went away and one that never showed up. */
+  bool shouldSleep = (now - lastFrameMs) > SLEEP_AFTER_MS;
+  if (shouldSleep != displayAsleep) {
+    displayAsleep = shouldSleep;
+    u8g2.setPowerSave(displayAsleep ? 1 : 0);
+    sendSleepState(displayAsleep);
+    if (!displayAsleep) lastDrawMs = 0;  /* redraw immediately on waking */
+  }
+
+  /* Nothing below here matters while the panel is off. */
+  if (displayAsleep) return;
 
   if (now - lastMarqueeMs >= 40) {
     marqueeOffset++;

@@ -152,6 +152,22 @@ would read as a dead device.
 Before the PC has ever been heard from, the display shows a waiting state with
 a slow sweep, so an idle device never looks like a crashed one.
 
+After **three minutes** with no frames, the panel switches off entirely and
+the board announces `{"t":"display","asleep":true}`. It wakes on the next
+frame, instantly.
+
+This matters because many motherboards keep supplying power to USB in
+soft-off, so the board can stay running all night after the PC shuts down.
+The microcontroller does not mind that at all, but an OLED does: brightness
+decays with hours lit, and static content — the stats labels, the `no link`
+badge — burns in permanently. Sleeping costs nothing and protects the one
+part that actually wears out.
+
+Change `SLEEP_AFTER_MS` in the sketch to adjust the delay. If you would
+rather the port cut power at shutdown instead, that is a BIOS setting: on
+Gigabyte boards, *Settings → Platform Power → ErP* and *USB Power Delivery
+in Soft-Off State (S5)*. Note ErP also disables Wake-on-LAN and USB wake.
+
 ## Hardware stats
 
 Stats work out of the box with no extra software: GPU figures come from
