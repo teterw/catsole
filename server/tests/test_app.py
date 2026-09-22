@@ -205,3 +205,69 @@ def test_frame_always_carries_a_mode(console):
     for mode in MODES:
         console.mode = mode
         assert console.build_frame()["mode"] == mode
+
+
+def load_stats(cpu=0.0, gpu=0.0):
+    return {
+        "cpu": {"temp": None, "load": cpu, "clock": None},
+        "gpu": {"temp": None, "load": gpu, "vram_used": None, "vram_total": None},
+        "ram": {"used": None, "total": None, "percent": None},
+        "fans": [],
+    }
+
+
+def test_heavy_load_jumps_to_stats(console):
+    console.mode = "lyrics"
+    console.hardware.stats = load_stats(cpu=95.0)
+    console.tick()
+    assert console.mode == "stats"
+
+
+def test_gpu_load_alone_is_enough(console):
+    console.mode = "lyrics"
+    console.hardware.stats = load_stats(gpu=88.0)
+    console.tick()
+    assert console.mode == "stats"
+
+
+def test_quiet_machine_does_not_jump(console):
+    # Rotation off, so this tests the load rule rather than the timer.
+    console.config.idle_rotate_s = 0
+    console.mode = "lyrics"
+    console.hardware.stats = load_stats(cpu=12.0, gpu=5.0)
+    console.tick()
+    assert console.mode == "lyrics"
+
+
+def test_start_mode_is_not_rotated_past_immediately(console):
+    # The first tick used to rotate straight away, so the configured
+    # starting screen was never seen.
+    assert console.mode == "lyrics"
+    console.hardware.stats = load_stats(cpu=5.0)
+    console.tick()
+    assert console.mode == "lyrics"
+
+
+def test_busy_holds_until_load_falls_well_back(console):
+    console.hardware.stats = load_stats(cpu=95.0)
+    console.tick()
+    assert console._busy is True
+
+    # Still above the release threshold, so it stays busy rather than
+    # flapping the moment load dips.
+    console.hardware.stats = load_stats(cpu=65.0)
+    console._next_stats = 0.0
+    console.tick()
+    assert console._busy is True
+
+    console.hardware.stats = load_stats(cpu=20.0)
+    console._next_stats = 0.0
+    console.tick()
+    assert console._busy is False
+
+
+def test_a_hand_picked_mode_survives_a_load_spike(console):
+    console.set_mode("clock")          # starts the manual hold
+    console.hardware.stats = load_stats(cpu=99.0)
+    console.tick()
+    assert console.mode == "clock"

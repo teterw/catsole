@@ -38,6 +38,12 @@ class Config:
     # With nothing playing the device cycles screens on its own.
     # Zero disables it.
     idle_rotate_s: float = 9.0
+
+    # The screen jumps to stats when the machine starts working hard,
+    # and holds there until it settles. Two thresholds rather than
+    # one, so load hovering on the line does not flap the display.
+    busy_enter_pct: float = 80.0
+    busy_exit_pct: float = 55.0
     # How long a hand-picked mode sticks before rotation resumes.
     manual_hold_s: float = 90.0
 

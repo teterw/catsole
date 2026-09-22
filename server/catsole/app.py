@@ -68,9 +68,12 @@ class DeskConsole:
         self.refresh_requested = False
         self.device_firmware = ""
         self.audio = AudioLevels()
-        self._rotate_at = 0.0
+        # Seeded a full interval out, so the configured start mode is
+        # actually shown rather than rotated past on the first tick.
+        self._rotate_at = time.monotonic() + config.idle_rotate_s
         self._manual_until = 0.0
         self._was_playing = False
+        self._busy = False
 
         self._track_key = None
         self._fetching = False
@@ -335,6 +338,27 @@ class DeskConsole:
             and self.now_playing.is_playing
         ) or (self.audio.available and not self.audio.silent)
 
+        # A machine under load is worth looking at, so the screen jumps to
+        # stats when it starts working hard and holds there until it
+        # settles. Hysteresis keeps load hovering near the line from
+        # flapping the display.
+        cpu_load = (self.stats.get("cpu") or {}).get("load") or 0.0
+        gpu_load = (self.stats.get("gpu") or {}).get("load") or 0.0
+        peak_load = max(cpu_load, gpu_load)
+        was_busy = self._busy
+        if self._busy:
+            self._busy = peak_load > self.config.busy_exit_pct
+        else:
+            self._busy = peak_load >= self.config.busy_enter_pct
+
+        if self._busy and not was_busy and now >= self._manual_until:
+            if self.mode != "stats":
+                self.mode = "stats"
+                log.info("load %.0f%% -> stats", peak_load)
+                self.push_frame()
+                self._was_playing = playing
+                return
+
         # Music starting pulls the screen back to the lyrics, unless a mode
         # was hand-picked recently.
         if playing and not self._was_playing and now >= self._manual_until:
@@ -345,7 +369,8 @@ class DeskConsole:
         self._was_playing = playing
 
         if self.config.idle_rotate_s > 0 and now >= self._manual_until:
-            if not playing:
+            # Rotation pauses while busy too, so the stats stay put.
+            if not playing and not self._busy:
                 if now >= self._rotate_at:
                     self.mode = next_mode(self.mode)
                     log.debug("idle rotation -> %s", self.mode)
@@ -426,6 +451,7 @@ class DeskConsole:
             "lyrics_kind": self.lyrics.kind,
             "stats": self.stats,
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
+            "busy": self._busy,
             "audio": {
                 "available": self.audio.available,
                 "device": self.audio.device_name,

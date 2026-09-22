@@ -115,6 +115,10 @@ static uint32_t perfSince = 0;
 static uint16_t fpsFrames = 0;
 static uint32_t fpsWindowMs = 0;
 static uint8_t fpsValue = 0;
+/* Share of wall-clock time spent drawing: the board's own workload,
+   which is the honest answer to how hard it is having to work. */
+static uint32_t fpsBusyUs = 0;
+static uint8_t mcuLoad = 0;
 
 
 /* ---- current frame -------------------------------------------------- */
@@ -860,7 +864,7 @@ static void drawClock() {
   u8g2.setFont(u8g2_font_4x6_tf);
   u8g2.drawVLine(82, 28, 30);
 
-  snprintf(info, sizeof(info), "fw %s", FIRMWARE_VERSION);
+  snprintf(info, sizeof(info), "mcu %d%%", mcuLoad);
   u8g2.drawUTF8(86, 34, info);
 
   uint32_t up = millis() / 1000UL;
@@ -1023,10 +1027,15 @@ static void render() {
   perfFrames++;
 
   fpsFrames++;
+  fpsBusyUs += (t2 - t0);
   uint32_t windowMs = millis() - fpsWindowMs;
   if (windowMs >= 1000) {
     fpsValue = (uint8_t)((fpsFrames * 1000UL) / windowMs);
+    /* Busy microseconds against the window, as a percentage. */
+    uint32_t pct = fpsBusyUs / (windowMs * 10UL);
+    mcuLoad = (uint8_t)(pct > 100 ? 100 : pct);
     fpsFrames = 0;
+    fpsBusyUs = 0;
     fpsWindowMs = millis();
   }
 }
