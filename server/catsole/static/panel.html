@@ -189,9 +189,8 @@
     <button data-scene="boot">boot</button>
     <button data-scene="idle">idle</button>
     <button data-scene="lyrics">lyrics</button>
-    <button data-scene="cover">cover</button>
+    <button data-scene="beat">beat</button>
     <button data-scene="clock">clock</button>
-    <button data-scene="fans">fans</button>
     <button data-scene="stats">stats</button>
     <button data-scene="stale">no link</button>
     <button data-scene="poses">poses</button>
@@ -370,7 +369,7 @@
     ctx.fillStyle = PHOSPHOR;
     ctx.fillText(label, 2, baseline);
     ctx.fillText(value, 24, baseline);
-    drawBar(2, baseline + 2, 124, 6, load);
+    drawBar(2, baseline + 2, 124, 4, load);
   }
 
   function drawStats(frame) {
@@ -386,11 +385,21 @@
       num(cpu.temp) + (cpu.temp === null || cpu.temp === undefined ? "" : "C") + "  " +
       (cpu.clock ? (cpu.clock / 1000).toFixed(2) + "GHz" : "--"), cpu.load);
 
-    statRow(37, "gpu",
+    statRow(32, "gpu",
       num(gpu.temp) + (gpu.temp === null || gpu.temp === undefined ? "" : "C") + "  " +
       pairGB(gpu.vram_used, gpu.vram_total), gpu.load);
 
-    statRow(54, "ram", pairGB(ram.used, ram.total), ram.percent);
+    statRow(44, "ram", pairGB(ram.used, ram.total), ram.percent);
+
+    var fans = frame.fans || [];
+    if (!fans.length) {
+      statRow(56, "fan", "-- rpm  (needs LHM)", null);
+    } else {
+      var fastest = 0;
+      fans.forEach(function (f) { if (f.rpm > fastest) fastest = f.rpm; });
+      var label = fastest + " rpm" + (fans.length > 1 ? "  +" + (fans.length - 1) + " more" : "");
+      statRow(56, "fan", label, Math.min(100, fastest * 100 / 2500));
+    }
   }
 
   function drawStale() {
@@ -416,12 +425,10 @@
       ctx.fillText("waiting for service", 2, 34);
     } else if (state.frame.mode === "stats") {
       drawStats(state.frame);
-    } else if (state.frame.mode === "cover") {
-      drawCoverScreen(ctx, state.frame);
+    } else if (state.frame.mode === "beat") {
+      drawBeatScreen(ctx, state.frame, state.audio && state.audio.levels);
     } else if (state.frame.mode === "clock") {
       drawClockScreen(ctx, state.frame);
-    } else if (state.frame.mode === "fans") {
-      drawFanScreen(ctx, state.frame);
     } else {
       drawLyrics(state.frame);
     }
@@ -491,11 +498,6 @@
       : "No device on any port. Check the cable, or start the service with --no-serial.";
   }
 
-  function pollArt() {
-    fetch("/api/art").then(function (r) { return r.json(); })
-      .then(function (d) { setArt(d.art || ""); }).catch(function () {});
-  }
-
   function poll() {
     fetch("/api/state")
       .then(function (r) { return r.json(); })
@@ -520,32 +522,6 @@
 
   // ---- cover, clock and fan screens, mirroring the firmware ------------
 
-  var artCanvas = null, artB64 = "";
-
-  function setArt(b64) {
-    if (b64 === artB64) return;
-    artB64 = b64;
-    if (!b64) { artCanvas = null; return; }
-    try {
-      var bin = atob(b64), size = 48, stride = (size + 7) >> 3;
-      var off = document.createElement("canvas");
-      off.width = size; off.height = size;
-      var octx = off.getContext("2d");
-      var img = octx.createImageData(size, size);
-      for (var y = 0; y < size; y++) {
-        for (var x = 0; x < size; x++) {
-          var byte = bin.charCodeAt(y * stride + (x >> 3));
-          var on = (byte >> (x & 7)) & 1;
-          var i = (y * size + x) * 4;
-          img.data[i] = 0xb8; img.data[i + 1] = 0xe8; img.data[i + 2] = 0xff;
-          img.data[i + 3] = on ? 255 : 0;
-        }
-      }
-      octx.putImageData(img, 0, 0);
-      artCanvas = off;
-    } catch (e) { artCanvas = null; }
-  }
-
   function drawProgressBar(c, frame) {
     if (!frame.dur) return;
     var pos = frame.pos || 0;
@@ -553,18 +529,30 @@
     if (w > 0) { c.fillStyle = PHOSPHOR; c.fillRect(2, 12, w, 2); }
   }
 
-  var spinCover = 0, spinFan = 0;
+  var spinCover = 0, spinFan = 0, bop = 0;
 
-  function drawCoverScreen(c, frame) {
-    var cx = 60, cy = 38, r = 20;
-    c.font = mono(7); c.fillStyle = PHOSPHOR;
+  function drawBeatScreen(c, frame, levels) {
+    // 30% of the disc hides behind the cat, so 70% shows.
+    var boxX = 2, boxW = 48, boxY = 16, r = 20;
+    var hidden = Math.round(r * 2 * 0.3);
+    var cx = boxX + boxW - hidden + r, cy = 38;
+
     var save = ctx; ctx = c;
     drawMarquee(frame.meta || "", 8, mono(7), PHOSPHOR, W - 4);
     ctx = save;
     c.fillStyle = PHOSPHOR; c.fillRect(0, 11, W, 1);
     drawProgressBar(c, frame);
 
-    if (frame.state === "playing" && !reduceMotion) spinCover += 0.055;
+    var playing = frame.state === "playing";
+    if (playing && !reduceMotion) spinCover += 0.055;
+
+    // Bass drives the bounce, same bands the firmware uses.
+    var bass = 0;
+    if (playing && levels && levels.length >= 3) {
+      bass = (levels[0] + levels[1] + levels[2]) / 3 / 15;
+    }
+    bop += (bass - bop) * 0.38;
+    var lift = Math.round(bop * 9);
 
     c.strokeStyle = PHOSPHOR; c.lineWidth = 1;
     [r, r - 4].forEach(function (rr) {
@@ -579,12 +567,16 @@
       c.stroke();
     }
 
-    c.fillStyle = GLASS; c.fillRect(1, 13, 50, 50);
-    if (artCanvas) {
-      c.drawImage(artCanvas, 2, 14);
-      c.strokeStyle = PHOSPHOR; c.strokeRect(1.5, 13.5, 49, 49);
-    } else {
-      drawCatArt(CAT[labPose(frame.state === "playing", false)], 4, 28, 10, 11, c);
+    c.fillStyle = GLASS;
+    c.fillRect(boxX - 1, boxY - 12, boxW + 2, 58);
+
+    var pose = bop > 0.55 ? 2 : labPose(playing, false);
+    drawCatArt(CAT[pose], boxX + 4, boxY + 12 - lift, 10, 11, c);
+
+    var shadow = 20 - lift;
+    if (shadow > 4) {
+      c.fillStyle = PHOSPHOR;
+      c.fillRect(boxX + 8 + Math.round(lift / 3), boxY + 48, shadow + 8, 1);
     }
   }
 
@@ -599,42 +591,6 @@
     c.font = mono(7);
     c.fillText(frame.date || "", 5, 56);
     drawCatArt(CAT[labPose(frame.state === "playing", false)], 92, 16, 6, 7, c);
-  }
-
-  function drawFanScreen(c, frame) {
-    var cx = 28, cy = 38, r = 20;
-    c.fillStyle = PHOSPHOR; c.font = mono(7);
-    c.fillText("fans", 2, 8);
-    c.fillRect(0, 11, W, 1);
-
-    var fans = frame.fans || [];
-    var fastest = 0;
-    fans.forEach(function (f) { if (f.rpm > fastest) fastest = f.rpm; });
-    if (!reduceMotion) spinFan += fastest > 0 ? (0.02 + (fastest / 2200) * 0.22) : 0.012;
-
-    c.strokeStyle = PHOSPHOR; c.lineWidth = 1;
-    c.beginPath(); c.arc(cx + 0.5, cy + 0.5, r, 0, 6.2832); c.stroke();
-    c.beginPath(); c.arc(cx + 0.5, cy + 0.5, 3, 0, 6.2832); c.fill();
-    for (var i = 0; i < 5; i++) {
-      var a = spinFan + i * 1.2566;
-      c.beginPath();
-      c.moveTo(cx + Math.cos(a) * 5, cy + Math.sin(a) * 5);
-      c.lineTo(cx + Math.cos(a + 0.5) * (r - 3), cy + Math.sin(a + 0.5) * (r - 3));
-      c.stroke();
-    }
-
-    c.fillStyle = PHOSPHOR;
-    if (!fans.length) {
-      c.font = mono(10); c.fillText("-- rpm", 56, 32);
-      c.font = mono(6);
-      c.fillText("no sensor source", 56, 44);
-      c.fillText("needs LHM running", 56, 52);
-    } else {
-      c.font = mono(6);
-      fans.forEach(function (f, i) {
-        c.fillText(f.name + "  " + (f.rpm < 0 ? "--" : f.rpm), 56, 24 + i * 11);
-      });
-    }
   }
 
   // ---- lab: preview scenes and animations -----------------------------
@@ -744,9 +700,12 @@
     if (scene === "boot") sceneBoot(t % 3400);
     else if (scene === "idle") sceneIdle();
     else if (scene === "poses") scenePoses();
-    else if (scene === "cover") {
-      drawCoverScreen(lx, { meta: "An Artist - A Track Title", state: "playing",
-                            pos: 62000, dur: 190000 });
+    else if (scene === "beat") {
+      // Synthetic beat so the bounce is visible without audio playing.
+      var t = Date.now() / 420;
+      var pulse = Math.max(0, Math.sin(t)) * 15;
+      drawBeatScreen(lx, { meta: "An Artist - A Track Title", state: "playing",
+                           pos: 62000, dur: 190000 }, [pulse, pulse, pulse]);
     }
     else if (scene === "clock") {
       var n = new Date();
@@ -755,7 +714,6 @@
         sec: ("0" + n.getSeconds()).slice(-2),
         date: n.toDateString().slice(0, 10).toLowerCase(), state: "idle" });
     }
-    else if (scene === "fans") { drawFanScreen(lx, { fans: [] }); }
     else if (scene === "stats") {
       var f = { cpu: { temp: 61, load: 34, clock: 4850 },
                 gpu: { temp: 68, load: 99, vram_used: 4211, vram_total: 16380 },
@@ -791,9 +749,7 @@
   requestAnimationFrame(labRender);
 
   poll();
-  pollArt();
   setInterval(poll, 1000);
-  setInterval(pollArt, 5000);
   requestAnimationFrame(render);
 })();
 </script>

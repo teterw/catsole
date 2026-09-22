@@ -16,7 +16,6 @@ import threading
 import time
 from datetime import datetime
 
-from .artwork import art_signature, encode_art, render_1bit
 from .audio import AudioLevels
 from .config import Config
 from .hardware import HardwareReader, empty_stats
@@ -26,7 +25,7 @@ from .media import MediaReader, NowPlaying, is_music
 
 log = logging.getLogger(__name__)
 
-MODES = ("lyrics", "cover", "stats", "fans", "clock")
+MODES = ("lyrics", "beat", "stats", "clock")
 
 
 def next_mode(current: str) -> str:
@@ -68,9 +67,6 @@ class DeskConsole:
         self.refresh_requested = False
         self.device_firmware = ""
         self.audio = AudioLevels()
-        self.art_b64 = ""
-        self.art_sig = ""
-        self.art_sent = False
         self._rotate_at = 0.0
         self._manual_until = 0.0
 
@@ -95,8 +91,6 @@ class DeskConsole:
             return
 
         self.device_firmware = str(event.get("fw", ""))
-        # The device forgets its artwork across a reset.
-        self.art_sent = False
         log.info("device announced firmware %s", self.device_firmware)
         # Answer immediately so the display leaves its waiting state.
         self.push_frame()
@@ -151,17 +145,6 @@ class DeskConsole:
 
         def worker():
             try:
-                raw = None
-                if hasattr(self.media, "fetch_thumbnail"):
-                    raw = self.media.fetch_thumbnail()
-                signature = art_signature(raw) if raw else ""
-                if signature != self.art_sig:
-                    packed = render_1bit(raw) if raw else None
-                    self.art_sig = signature
-                    self.art_b64 = encode_art(packed) if packed else ""
-                    self.art_sent = False
-                    log.info("cover art: %s", "loaded" if packed else "none")
-
                 found = self.lyrics_provider.fetch(
                     now_playing.artist,
                     now_playing.title,
@@ -203,24 +186,14 @@ class DeskConsole:
             else "idle",
         }
 
-    def _fans_frame(self) -> dict:
-        return {
-            "t": "frame",
-            "mode": "fans",
-            "fans": self.stats.get("fans", [])[:3],
-        }
-
     def build_frame(self) -> dict:
-        if self.mode == "fans":
-            return self._fans_frame()
         if self.mode == "clock":
             return self._clock_frame()
         if self.mode == "stats":
             return self._stats_frame()
         frame = self._lyrics_frame()
-        if self.mode == "cover":
-            frame["mode"] = "cover"
-            frame["art"] = 1 if self.art_b64 else 0
+        if self.mode == "beat":
+            frame["mode"] = "beat"
         return frame
 
     def _stats_frame(self) -> dict:
@@ -246,6 +219,7 @@ class DeskConsole:
                 "total": ram.get("total"),
                 "percent": ram.get("percent"),
             },
+            "fans": self.stats.get("fans", [])[:3],
         }
 
     def _lyrics_frame(self) -> dict:
@@ -345,10 +319,6 @@ class DeskConsole:
                 # interval after the music stops, not immediately.
                 self._rotate_at = now + self.config.idle_rotate_s
 
-        if self.art_b64 and not self.art_sent:
-            if self.link.send({"t": "art", "d": self.art_b64}):
-                self.art_sent = True
-
         if self.refresh_requested:
             self.refresh_requested = False
             # A hold on a track whose lyrics were not found is worth a retry.
@@ -417,7 +387,6 @@ class DeskConsole:
                 "app": playing.app_id,
             },
             "lyrics_kind": self.lyrics.kind,
-            "art": bool(self.art_b64),
             "stats": self.stats,
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
             "audio": {

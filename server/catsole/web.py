@@ -37,12 +37,6 @@ def create_app(console) -> Flask:
         payload["frame"] = console.build_frame()
         return jsonify(payload)
 
-    @app.get("/api/art")
-    def art():
-        """The current cover as XBM base64, so the preview can show the
-        same bitmap the device received rather than an approximation."""
-        return jsonify({"art": console.art_b64, "size": 48})
-
     @app.post("/api/mode")
     def set_mode():
         body = request.get_json(silent=True) or {}
