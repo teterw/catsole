@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import threading
 import time
 
 import psutil
@@ -162,14 +163,55 @@ def parse_nvidia_smi(csv_line: str) -> dict:
 class HardwareReader:
     """Polls all available sensor sources and merges what it gets."""
 
-    def __init__(self):
+    def __init__(self, interval_s: float = 1.0):
         self._lhm_down_until = 0.0
         self._nvidia_missing = False
+
+        # Reading sensors costs roughly 50ms, almost all of it spawning
+        # nvidia-smi. On the main loop that stalled the 20Hz spectrum
+        # stream once a second, which showed up as the display stuttering.
+        # It runs on its own thread now and callers read the last result.
+        self.interval_s = interval_s
+        self._latest = empty_stats()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
         # First psutil call always reads 0.0; prime it so the first real
         # poll has a meaningful interval behind it.
         psutil.cpu_percent(interval=None)
 
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="hardware-poll", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+
+    def latest(self) -> dict:
+        """The most recent reading, without blocking."""
+        with self._lock:
+            return self._latest
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                reading = self.poll()
+                with self._lock:
+                    self._latest = reading
+            except Exception:
+                log.exception("hardware poll failed")
+            self._stop.wait(self.interval_s)
+
     def poll(self) -> dict:
+        """Read every source. Slow: prefer latest() on a hot path."""
         stats = empty_stats()
         self._read_psutil(stats)
         self._read_nvidia(stats)

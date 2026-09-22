@@ -43,6 +43,9 @@ class StubHardware:
         self.polls += 1
         return self.stats
 
+    def latest(self):
+        return self.stats
+
     lhm_available = True
 
 

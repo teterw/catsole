@@ -301,7 +301,11 @@ class DeskConsole:
             self._next_media = now + self.config.media_poll_s
 
         if now >= self._next_stats:
-            self.stats = self.hardware.poll()
+            # Non-blocking: the reader polls on its own thread.
+            reader = self.hardware
+            self.stats = (
+                reader.latest() if hasattr(reader, "latest") else reader.poll()
+            )
             self._next_stats = now + self.config.stats_poll_s
 
         # Spectrum goes out far more often than full frames. A meter that
@@ -399,11 +403,15 @@ class DeskConsole:
     def run(self) -> None:
         self.link.start()
         self.audio.start()
+        if hasattr(self.hardware, "start"):
+            self.hardware.start()
         log.info("catsole running; mode=%s", self.mode)
         try:
             while not self._stop.is_set():
                 self.tick()
-                time.sleep(0.05)
+                # Short enough that the 20Hz spectrum gate is not
+                # quantised by the loop's own sleep.
+                time.sleep(0.015)
         except KeyboardInterrupt:
             log.info("interrupted")
         finally:
@@ -421,6 +429,11 @@ class DeskConsole:
             pass
         try:
             self.audio.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self.hardware, "stop"):
+                self.hardware.stop()
         except Exception:
             pass
 
