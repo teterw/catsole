@@ -69,6 +69,13 @@ ONSET_SENSITIVITY = 1.45
 MIN_BEAT_GAP_S = 0.26   # 230 BPM ceiling
 MAX_BEAT_GAP_S = 1.10   # 55 BPM floor
 
+# How far the beat grid is dragged toward each detected onset. Snapping
+# the grid onto every detection made the phase jump backwards whenever
+# detection was early or late, which showed up as a stutter. Correcting
+# a fifth of the error keeps the phase continuous and still converges
+# within a few beats.
+PHASE_CORRECTION = 0.20
+
 
 def band_edges(rate: int, bands: int = BANDS) -> list[tuple[int, int]]:
     """FFT bin ranges for logarithmically spaced bands."""
@@ -113,6 +120,7 @@ class AudioLevels:
         self._prev_bands = None
         self._last_onset = 0.0
         self._period = 0.0
+        self._beat_at = 0.0   # reference beat, free-running
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -159,9 +167,9 @@ class AudioLevels:
         onset lands.
         """
         with self._lock:
-            if self._period <= 0 or self._last_onset <= 0:
+            if self._period <= 0 or self._beat_at <= 0:
                 return 0.0
-            return ((time.monotonic() - self._last_onset) / self._period) % 1.0
+            return ((time.monotonic() - self._beat_at) / self._period) % 1.0
 
     @property
     def silent(self) -> bool:
@@ -222,6 +230,22 @@ class AudioLevels:
         if len(self._gaps) >= 4:
             with self._lock:
                 self._period = float(np.median(self._gaps))
+
+        with self._lock:
+            if self._period <= 0:
+                return
+            if self._beat_at <= 0:
+                self._beat_at = now
+                return
+
+            # Drag the grid toward this onset instead of restarting it on
+            # top of it. Where the onset fell relative to the nearest grid
+            # beat, signed so an early hit pulls back and a late one pushes
+            # forward.
+            offset = (now - self._beat_at) % self._period
+            if offset > self._period / 2.0:
+                offset -= self._period
+            self._beat_at += offset * PHASE_CORRECTION
 
     def _run(self) -> None:
         audio = None

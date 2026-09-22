@@ -735,17 +735,21 @@ static void drawLyrics() {
    * Watching for bass spikes here looked erratic, because detection is
    * never perfect and a missed or doubled hit shows up immediately. The
    * PC estimates the tempo instead and sends the phase, so this only has
-   * to shape it: a quick rise on the beat that settles before the next
-   * one reads as bobbing in time rather than reacting at random. */
+   * to shape it into a dip that lands on the beat. */
   bool liveEq = (millis() - lastEqMs) < EQ_FRESH_MS;
   float lift_f = 0.0f;
   if (playing && liveEq) {
     /* Carry the phase forward between messages: they arrive 20 times a
-       second against 30 frames, so using them raw made the bob step. */
+       second against 30 frames, so using them raw made the bob step. The
+       elapsed time is capped at one period, since a longer gap means the
+       spectrum stopped arriving and extrapolating further would only
+       accumulate error. */
     float phase = beatPhase / 100.0f;
     if (beatPeriodMs > 0) {
-      phase += (float)(millis() - beatPhaseAtMs) / (float)beatPeriodMs;
-      phase -= (int)phase;
+      uint32_t since = millis() - beatPhaseAtMs;
+      if (since > beatPeriodMs) since = beatPeriodMs;
+      phase += (float)since / (float)beatPeriodMs;
+      while (phase >= 1.0f) phase -= 1.0f;
     }
     /* Lowest on the beat, rising between: a head-bob dips on the beat
        rather than peaking on it, which is what made the old shape feel
@@ -754,7 +758,6 @@ static void drawLyrics() {
     if (lift_f < 0.0f) lift_f = 0.0f;
   }
   int16_t lift = (int16_t)(lift_f * 5.0f);
-  float hop = lift_f;
 
   /* The idle screen already gives the mascot the stage, so the perched
      one is skipped there rather than putting two cats on one screen. */
@@ -765,7 +768,7 @@ static void drawLyrics() {
     u8g2.setDrawColor(1);
 
     /* Eyes widen on the landing, which reads as reacting to the beat. */
-    uint8_t pose = (playing && liveEq && hop < 0.25f)
+    uint8_t pose = (playing && liveEq && lift_f < 0.25f)
                        ? CAT_HAPPY
                        : catPose(playing, false);
     drawCat(CAT_PERCH_X, 55 - lift, pose, u8g2_font_4x6_tf, 7);
