@@ -14,6 +14,9 @@ winrt-Windows.Storage.Streams>=2.0
 
 # Audio-reactive equalizer: WASAPI loopback capture plus FFT.
 # Optional -- the device falls back to a synthetic wave without them.
+# Cover art: fetch, crop, dither to 1-bit.
+pillow>=10.0
+
 numpy>=1.26
 pyaudiowpatch>=0.2.12
 

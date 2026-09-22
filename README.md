@@ -120,26 +120,71 @@ project uses the `winrt-*` split packages instead, which are its maintained
 successor and ship 3.13 wheels. Import paths are `winrt.windows.media.control`
 rather than `winsdk.windows.media.control`.
 
-## Modes
+## Screens
 
-**Lyrics** — artist and title in the top strip, marqueed when too long for the
-panel, with the current synced lyric line below and a cosmetic equalizer along
-the bottom. There is no microphone on this build, so the bars are animated
-rather than audio-reactive. Long lines wrap and step down through three font
-sizes so they fit rather than being cut off.
+Five, cycled from the control panel or automatically while idle.
 
-Lyrics come from [lrclib.net](https://lrclib.net), which needs no API key.
-When no synced lyrics exist the display falls back to a title card rather than
-showing an untimed line in a position it cannot justify. Responses are cached
-under `server/cache/`, which is gitignored.
+**Lyrics** — artist and title marqueed along the top, the current synced
+lyric line below, and a full-width equalizer that follows the actual audio.
+Long lines wrap and step down through three font sizes rather than being cut
+off, and a new line slides in as the old one slides out.
 
-**Stats** — three labelled rows with inline usage bars: CPU clock,
-temperature and load; GPU temperature, load and VRAM; and system RAM used
-against total. Any reading that is unavailable shows as `--` for that field
-alone; one dead sensor never blanks the mode.
+**Cover** — the album art as a 48×48 dithered square with a record sliding
+out from behind it, spinning only while the track plays. Tracks with no
+artwork show the mascot instead of an empty square.
 
-Switch between them with the buttons on the control panel. `refresh now`
-forces an immediate re-poll rather than waiting for the next interval.
+**Stats** — CPU clock, temperature and load; GPU temperature, load and VRAM;
+and system RAM used against total. Unavailable readings show `--` for that
+field alone.
+
+**Fans** — fan speeds with a spinning fan whose rate follows the fastest one.
+Needs LibreHardwareMonitor; without it the blades turn over slowly and the
+readout says so.
+
+**Clock** — the time, sent from the PC as finished strings since the board has
+no RTC of its own, with the mascot alongside.
+
+### The mascot
+
+An original ASCII cat with five poses. It blinks on a deliberately uneven
+rhythm so it does not read as a loop, perks up when a track starts, and curls
+up when the PC is away. It appears on the boot screen, the idle screen, the
+clock, and wherever a cover is missing.
+
+The boot sequence is a white flash, the cat rising from below and easing into
+place, two uneven blinks, then the name typing in beside it.
+
+### Audio-reactive equalizer
+
+The PC captures its own speaker output through WASAPI loopback, runs an FFT,
+and sends sixteen logarithmic bands as a hex string at 20Hz. The device
+interpolates those across 43 bars.
+
+Three things make it look like music rather than water: a narrow 38dB window
+so the range maps across the full bar height, a fast release so bars fall
+between beats, and a per-band tilt to offset music's roughly 3dB-per-octave
+rolloff. Automatic gain keeps quiet tracks filling the display.
+
+Optional. Without `numpy` and `pyaudiowpatch`, or if nothing arrives for
+600ms, the device falls back to a synthetic travelling wave.
+
+### Idling
+
+With nothing playing the screens rotate every nine seconds, so the device has
+a life of its own. A hand-picked mode holds for 90 seconds before rotation
+resumes, and the timer resets while music plays so rotation starts a full
+interval after playback stops.
+
+### What counts as music
+
+Windows reports the *application*, not the site, so a YouTube tab and an
+Instagram tab in the same browser are indistinguishable by app id. Filtering
+is on shape instead: anything shorter than 60 seconds is treated as a story or
+a reel and ignored. A missing duration is not treated as a failure, since live
+streams routinely report none.
+
+Tune `min_duration_s`, `allow_apps`, `block_apps` and `require_artist` in
+`server/config.json`.
 
 ## When the PC goes away
 
@@ -251,8 +296,14 @@ whether Windows itself shows it in the volume flyout's media control.
 **CPU temp is `--`.** LibreHardwareMonitor is not running elevated with its
 web server on. See above.
 
-**Upload fails with "serial port busy".** The service is holding the port.
-Stop it before flashing.
+**Upload fails with "serial port busy" or "no device found".** The service is
+holding the port. Stop the *scheduled task*, not just the process — it is
+configured to restart on failure, so killing the process alone makes Windows
+start it straight back and grab the port again:
+
+```powershell
+Stop-ScheduledTask -TaskName catsole
+```
 
 ## Layout
 
