@@ -98,6 +98,14 @@ static uint32_t lastHelloMs = 0;
 static bool everReceived = false;
 static bool displayAsleep = false;
 
+/* Frame timing, so headroom questions can be answered with numbers rather
+   than estimates. Reported by the "perf" command, which also resets. */
+static uint32_t perfRenderSum = 0;
+static uint32_t perfSendSum = 0;
+static uint32_t perfFrames = 0;
+static uint32_t perfSince = 0;
+
+
 /* ---- current frame -------------------------------------------------- */
 struct Frame {
   char mode[8];
@@ -129,6 +137,30 @@ static uint16_t eqPhase[EQ_BARS];
 static const uint16_t TRANSITION_MS = 260;
 static char prevMainText[104];
 static uint32_t transitionStartMs = 0;
+
+/* Set when the main line changes; the layout is rebuilt on the next draw
+   rather than inside the serial handler, which keeps the text-layout types
+   out of the parser's scope. */
+static bool wrapDirty = true;
+
+#define MAX_WRAP_LINES 4
+#define MAX_WRAP_CHARS 48
+
+/* A finished layout: which lines, at which size.
+ *
+ * Choosing a font and wrapping to it costs several milliseconds, because
+ * it measures the string repeatedly against up to three faces. Doing that
+ * every frame for a line that changes every few seconds was the single
+ * biggest cost in the render loop, so layout happens once when the text
+ * arrives and drawing just replays the result. */
+struct WrappedText {
+  char lines[MAX_WRAP_LINES][MAX_WRAP_CHARS];
+  uint8_t count;
+  uint8_t styleIndex;
+};
+
+static WrappedText wrapCurrent;
+static WrappedText wrapPrev;
 
 /* ---- serial receive -------------------------------------------------- */
 static char rxBuf[640];
@@ -211,6 +243,24 @@ static void handleLine(const char *line) {
     return;
   }
 
+  if (strcmp(type, "perf") == 0) {
+    uint32_t elapsed = millis() - perfSince;
+    Serial.print(F("{\"t\":\"perf\",\"frames\":"));
+    Serial.print(perfFrames);
+    Serial.print(F(",\"window_ms\":"));
+    Serial.print(elapsed);
+    Serial.print(F(",\"fps\":"));
+    Serial.print(elapsed ? (perfFrames * 1000.0f) / elapsed : 0.0f, 1);
+    Serial.print(F(",\"draw_us\":"));
+    Serial.print(perfFrames ? perfRenderSum / perfFrames : 0);
+    Serial.print(F(",\"send_us\":"));
+    Serial.print(perfFrames ? perfSendSum / perfFrames : 0);
+    Serial.println(F("}"));
+    perfRenderSum = perfSendSum = perfFrames = 0;
+    perfSince = millis();
+    return;
+  }
+
   if (strcmp(type, "frame") != 0) return;
 
   copyField(frame.mode, sizeof(frame.mode), doc["mode"] | "lyrics");
@@ -225,6 +275,7 @@ static void handleLine(const char *line) {
   if (strcmp(incoming, frame.mainText) != 0) {
     copyField(prevMainText, sizeof(prevMainText), frame.mainText);
     transitionStartMs = millis();
+    wrapDirty = true;
   }
   copyField(frame.mainText, sizeof(frame.mainText), incoming);
   frame.eq = doc["eq"] | 0;
@@ -312,8 +363,6 @@ static void drawMarquee(const char *text, uint8_t baseline, uint8_t boxW) {
  * the current font; if the text still will not fit in the lines
  * available, step down to a smaller font rather than cut the tail off.
  */
-#define MAX_WRAP_LINES 4
-#define MAX_WRAP_CHARS 48
 
 static char wrapBuf[MAX_WRAP_LINES][MAX_WRAP_CHARS];
 static uint8_t wrapCount = 0;
@@ -404,11 +453,12 @@ static const uint8_t MAIN_STYLE_COUNT = 3;
 static const uint8_t BAND_TOP = 14;
 static const uint8_t BAND_BOTTOM = 50;
 
-/* Draws the main line, vertically centred, at the largest size that fits.
-   yShift moves the whole block, which is what the slide transition uses;
-   the caller clips to the band so shifted text cannot escape it. */
-static void drawMainText(const char *text, uint8_t boxW, int16_t yShift) {
-  if (text[0] == 0) return;
+
+/* Lay text out once. Call when the text changes, not when drawing. */
+static void prepareWrap(const char *text, uint8_t boxW, WrappedText &out) {
+  out.count = 0;
+  out.styleIndex = 0;
+  if (text == NULL || text[0] == 0) return;
 
   uint8_t chosen = MAIN_STYLE_COUNT - 1;
   for (uint8_t i = 0; i < MAIN_STYLE_COUNT; i++) {
@@ -418,20 +468,33 @@ static void drawMainText(const char *text, uint8_t boxW, int16_t yShift) {
       break;
     }
   }
+  /* If nothing fit, wrapBuf holds the smallest font's attempt, which is
+     the best available answer. */
+  out.styleIndex = chosen;
+  out.count = wrapCount;
+  for (uint8_t i = 0; i < wrapCount && i < MAX_WRAP_LINES; i++) {
+    memcpy(out.lines[i], wrapBuf[i], MAX_WRAP_CHARS);
+  }
+}
 
-  /* If nothing fit, wrapBuf already holds the smallest font's attempt. */
-  const TextStyle style = MAIN_STYLES[chosen];
+/* Draws a prepared layout, vertically centred. yShift moves the whole
+   block, which is what the slide transition uses; the caller clips to the
+   band so shifted text cannot escape it. */
+static void drawWrapped(const WrappedText &wrapped, int16_t yShift) {
+  if (wrapped.count == 0) return;
+
+  const TextStyle style = MAIN_STYLES[wrapped.styleIndex];
   u8g2.setFont(style.font);
 
-  uint8_t total = wrapCount * style.lineH;
+  uint8_t total = wrapped.count * style.lineH;
   uint8_t bandH = BAND_BOTTOM - BAND_TOP;
   uint8_t top = BAND_TOP + (bandH > total ? (uint8_t)((bandH - total) / 2) : 0);
 
-  for (uint8_t i = 0; i < wrapCount; i++) {
+  for (uint8_t i = 0; i < wrapped.count; i++) {
     int16_t y = (int16_t)(top + (i + 1) * style.lineH - 3) + yShift;
     /* Skip lines that have travelled clear of the band. */
     if (y < (int16_t)BAND_TOP - 20 || y > (int16_t)BAND_BOTTOM + 20) continue;
-    u8g2.drawUTF8(2, y, wrapBuf[i]);
+    u8g2.drawUTF8(2, y, wrapped.lines[i]);
   }
 }
 
@@ -470,6 +533,15 @@ static void drawLyrics() {
     u8g2.setFont(u8g2_font_6x12_tf);
     u8g2.drawUTF8(2, 34, "nothing playing");
   } else if (frame.mainText[0] != 0) {
+    /* Rebuild the layout only when the line actually changed. The outgoing
+       line's layout is already finished, so it is copied rather than
+       recomputed. */
+    if (wrapDirty) {
+      wrapPrev = wrapCurrent;
+      prepareWrap(frame.mainText, SCREEN_W - 4, wrapCurrent);
+      wrapDirty = false;
+    }
+
     uint32_t since = millis() - transitionStartMs;
     if (since < TRANSITION_MS) {
       /* Ease out, so the incoming line decelerates into place instead of
@@ -481,13 +553,11 @@ static void drawLyrics() {
       int16_t travel = (int16_t)(BAND_BOTTOM - BAND_TOP);
 
       u8g2.setClipWindow(0, BAND_TOP, SCREEN_W, BAND_BOTTOM);
-      if (prevMainText[0] != 0) {
-        drawMainText(prevMainText, SCREEN_W - 4, (int16_t)(-eased * travel));
-      }
-      drawMainText(frame.mainText, SCREEN_W - 4, (int16_t)((1.0f - eased) * travel));
+      drawWrapped(wrapPrev, (int16_t)(-eased * travel));
+      drawWrapped(wrapCurrent, (int16_t)((1.0f - eased) * travel));
       u8g2.setMaxClipWindow();
     } else {
-      drawMainText(frame.mainText, SCREEN_W - 4, 0);
+      drawWrapped(wrapCurrent, 0);
     }
 
     if (strcmp(frame.lyr, "synced") == 0) {
@@ -606,6 +676,8 @@ static void drawStaleBadge() {
 }
 
 static void render() {
+  uint32_t t0 = micros();
+
   u8g2.clearBuffer();
 
   switch (linkState) {
@@ -628,7 +700,13 @@ static void render() {
     drawStaleBadge();
   }
 
+  uint32_t t1 = micros();
   u8g2.sendBuffer();
+  uint32_t t2 = micros();
+
+  perfRenderSum += (t1 - t0);
+  perfSendSum += (t2 - t1);
+  perfFrames++;
 }
 
 /* ==================================================================== *
@@ -732,7 +810,11 @@ void loop() {
   }
 
   if (now - lastDrawMs >= FRAME_INTERVAL_MS) {
+    /* Anchor to the intended cadence, not to when drawing finished.
+       Stamping this afterwards made every cycle "render time + interval",
+       which at a 28ms frame turned a 33ms target into 61ms -- half the
+       frame rate, for no reason. */
+    lastDrawMs = now;
     render();
-    lastDrawMs = millis();
   }
 }
