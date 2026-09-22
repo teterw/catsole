@@ -142,6 +142,13 @@ static const uint32_t EQ_FRESH_MS = 600;
 static uint8_t eqBand[EQ_BANDS];
 static uint32_t lastEqMs = 0;
 
+/* Cover art: a 48x48 one-bit square, XBM-packed so it can be blitted
+   straight out with no unpacking. Arrives base64 in a single line. */
+static const uint8_t ART_SIZE = 48;
+static const uint16_t ART_BYTES = (ART_SIZE / 8) * ART_SIZE;
+static uint8_t artBits[ART_BYTES];
+static bool artValid = false;
+
 /* A lyric line that swaps instantly is jarring at this size, so the
    outgoing line is kept around long enough to slide it out while the new
    one slides in beneath it. */
@@ -239,6 +246,32 @@ static void sendSleepState(bool asleep) {
  * inbound frames
  * ==================================================================== */
 
+static int8_t b64Value(char c) {
+  if (c >= 'A' && c <= 'Z') return (int8_t)(c - 'A');
+  if (c >= 'a' && c <= 'z') return (int8_t)(c - 'a' + 26);
+  if (c >= '0' && c <= '9') return (int8_t)(c - '0' + 52);
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;  /* padding and anything unexpected */
+}
+
+static uint16_t b64Decode(const char *in, uint8_t *out, uint16_t maxOut) {
+  uint16_t written = 0;
+  uint32_t acc = 0;
+  uint8_t bits = 0;
+  for (const char *p = in; *p; p++) {
+    int8_t v = b64Value(*p);
+    if (v < 0) continue;
+    acc = (acc << 6) | (uint8_t)v;
+    bits += 6;
+    if (bits >= 8) {
+      bits = (uint8_t)(bits - 8);
+      if (written < maxOut) out[written++] = (uint8_t)((acc >> bits) & 0xFF);
+    }
+  }
+  return written;
+}
+
 static void handleLine(const char *line) {
   if (line[0] == 0) return;
 
@@ -249,6 +282,17 @@ static void handleLine(const char *line) {
   const char *type = doc["t"] | "";
 
   if (strcmp(type, "ping") == 0) {
+    lastFrameMs = millis();
+    everReceived = true;
+    return;
+  }
+
+  if (strcmp(type, "art") == 0) {
+    const char *data = doc["d"] | "";
+    uint16_t n = b64Decode(data, artBits, ART_BYTES);
+    /* Only accept a complete square: a truncated one would render as
+       garbage across the screen. */
+    artValid = (n == ART_BYTES);
     lastFrameMs = millis();
     everReceived = true;
     return;
@@ -721,6 +765,62 @@ static void drawStatRow(uint8_t baseline, const char *label, const char *value,
   }
 }
 
+/* Cover screen: the art with a record sliding out from behind it.
+ *
+ * The disc is drawn first and then masked where the art sits, which is
+ * what makes it read as emerging from behind rather than floating on top.
+ * It is drawn procedurally rather than as a rotated bitmap, because
+ * rotating a bitmap every frame would cost far more than three lines. */
+static void drawCover() {
+  const int16_t artX = 2;
+  const int16_t artY = 14;
+  const int16_t cx = 60;
+  const int16_t cy = 38;
+  const int16_t r = 20;
+
+  u8g2.setFont(u8g2_font_5x7_tf);
+  drawMarquee(frame.meta, META_BASELINE, SCREEN_W - 4);
+  u8g2.drawHLine(0, RULE_Y, SCREEN_W);
+  drawProgress();
+
+  bool spinning = strcmp(frame.state, "playing") == 0;
+
+  /* Rotation only advances while playing, so a paused track visibly
+     stops rather than spinning on forever. */
+  static float angle = 0.0f;
+  if (spinning) angle += 0.055f;
+  if (angle > 6.2832f) angle -= 6.2832f;
+
+  u8g2.drawCircle(cx, cy, r, U8G2_DRAW_ALL);
+  u8g2.drawCircle(cx, cy, r - 4, U8G2_DRAW_ALL);
+  u8g2.drawDisc(cx, cy, 3, U8G2_DRAW_ALL);
+
+  for (uint8_t i = 0; i < 3; i++) {
+    float a = angle + i * 2.0944f;  /* 120 degrees apart */
+    int16_t x1 = cx + (int16_t)(cos(a) * (r - 5));
+    int16_t y1 = cy + (int16_t)(sin(a) * (r - 5));
+    int16_t x2 = cx + (int16_t)(cos(a) * 5);
+    int16_t y2 = cy + (int16_t)(sin(a) * 5);
+    u8g2.drawLine(x1, y1, x2, y2);
+  }
+
+  if (artValid) {
+    /* Punch a hole in the disc so the art sits in front of it. */
+    u8g2.setDrawColor(0);
+    u8g2.drawBox(artX - 1, artY - 1, ART_SIZE + 2, ART_SIZE + 2);
+    u8g2.setDrawColor(1);
+    u8g2.drawXBM(artX, artY, ART_SIZE, ART_SIZE, artBits);
+    u8g2.drawFrame(artX - 1, artY - 1, ART_SIZE + 2, ART_SIZE + 2);
+  } else {
+    /* No cover for this track, so the mascot takes the space. */
+    u8g2.setDrawColor(0);
+    u8g2.drawBox(artX - 1, artY - 1, ART_SIZE + 2, ART_SIZE + 2);
+    u8g2.setDrawColor(1);
+    drawCat(artX + 2, artY + 14, catPose(spinning, false),
+            u8g2_font_6x12_tf, 11);
+  }
+}
+
 static void drawStats() {
   char value[40];
   char tempStr[12];
@@ -795,6 +895,7 @@ static void render() {
     case LINK_LIVE:
     case LINK_STALE:
       if (strcmp(frame.mode, "stats") == 0) drawStats();
+      else if (strcmp(frame.mode, "cover") == 0) drawCover();
       else drawLyrics();
       break;
   }

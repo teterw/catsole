@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 
+from .artwork import art_signature, encode_art, render_1bit
 from .audio import AudioLevels
 from .config import Config
 from .hardware import HardwareReader, empty_stats
@@ -24,7 +25,7 @@ from .media import MediaReader, NowPlaying
 
 log = logging.getLogger(__name__)
 
-MODES = ("lyrics", "stats")
+MODES = ("lyrics", "cover", "stats")
 
 
 class DeskConsole:
@@ -57,6 +58,9 @@ class DeskConsole:
         self.refresh_requested = False
         self.device_firmware = ""
         self.audio = AudioLevels()
+        self.art_b64 = ""
+        self.art_sig = ""
+        self.art_sent = False
 
         self._track_key = None
         self._fetching = False
@@ -79,6 +83,8 @@ class DeskConsole:
             return
 
         self.device_firmware = str(event.get("fw", ""))
+        # The device forgets its artwork across a reset.
+        self.art_sent = False
         log.info("device announced firmware %s", self.device_firmware)
         # Answer immediately so the display leaves its waiting state.
         self.push_frame()
@@ -119,6 +125,17 @@ class DeskConsole:
 
         def worker():
             try:
+                raw = None
+                if hasattr(self.media, "fetch_thumbnail"):
+                    raw = self.media.fetch_thumbnail()
+                signature = art_signature(raw) if raw else ""
+                if signature != self.art_sig:
+                    packed = render_1bit(raw) if raw else None
+                    self.art_sig = signature
+                    self.art_b64 = encode_art(packed) if packed else ""
+                    self.art_sent = False
+                    log.info("cover art: %s", "loaded" if packed else "none")
+
                 found = self.lyrics_provider.fetch(
                     now_playing.artist,
                     now_playing.title,
@@ -149,7 +166,11 @@ class DeskConsole:
     def build_frame(self) -> dict:
         if self.mode == "stats":
             return self._stats_frame()
-        return self._lyrics_frame()
+        frame = self._lyrics_frame()
+        if self.mode == "cover":
+            frame["mode"] = "cover"
+            frame["art"] = 1 if self.art_b64 else 0
+        return frame
 
     def _stats_frame(self) -> dict:
         cpu = self.stats.get("cpu", {})
@@ -256,6 +277,10 @@ class DeskConsole:
                 self.link.send({"t": "eq", "b": self.audio.hex_levels()})
             self._next_eq = now + self.config.eq_interval_s
 
+        if self.art_b64 and not self.art_sent:
+            if self.link.send({"t": "art", "d": self.art_b64}):
+                self.art_sent = True
+
         if self.refresh_requested:
             self.refresh_requested = False
             # A hold on a track whose lyrics were not found is worth a retry.
@@ -324,6 +349,7 @@ class DeskConsole:
                 "app": playing.app_id,
             },
             "lyrics_kind": self.lyrics.kind,
+            "art": bool(self.art_b64),
             "stats": self.stats,
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
             "audio": {

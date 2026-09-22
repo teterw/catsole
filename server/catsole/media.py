@@ -24,6 +24,7 @@ try:
     from winrt.windows.media.control import (
         GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
     )
+    from winrt.windows.storage.streams import Buffer, InputStreamOptions
 
     WINRT_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only off Windows
@@ -181,6 +182,42 @@ class MediaReader:
             # Drop the cached manager so the next poll rebuilds it; the
             # session manager goes stale when the shell restarts.
             self._manager = None
+            return None
+
+    def fetch_thumbnail(self) -> bytes | None:
+        """Read the current session's cover art.
+
+        This costs a stream read and an allocation, so it is called on
+        track change rather than on every poll. Not every source supplies
+        one; None simply means there is no cover to show.
+        """
+        if not WINRT_AVAILABLE:
+            return None
+        try:
+            manager = self._ensure_manager()
+            if manager is None:
+                return None
+            session = manager.get_current_session()
+            if session is None:
+                return None
+
+            props = self._run(session.try_get_media_properties_async())
+            thumbnail = props.thumbnail if props else None
+            if thumbnail is None:
+                return None
+
+            stream = self._run(thumbnail.open_read_async())
+            size = stream.size
+            if not size:
+                return None
+
+            buffer = Buffer(size)
+            self._run(
+                stream.read_async(buffer, size, InputStreamOptions.READ_AHEAD)
+            )
+            return bytes(buffer)
+        except Exception as exc:
+            log.debug("thumbnail fetch failed: %s", exc)
             return None
 
     def close(self) -> None:
