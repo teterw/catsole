@@ -76,6 +76,13 @@ MAX_BEAT_GAP_S = 1.10   # 55 BPM floor
 # within a few beats.
 PHASE_CORRECTION = 0.20
 
+# A rhythm can be counted at one speed or at twice it, and the median
+# flips between the two when a track has offbeats as strong as its
+# downbeats. Each flip resets the grid, which is what reads as the
+# animation getting confused. A new estimate that is half or double
+# the current one has to persist before it is believed.
+DOUBLE_TIME_GUARD = 6
+
 
 def band_edges(rate: int, bands: int = BANDS) -> list[tuple[int, int]]:
     """FFT bin ranges for logarithmically spaced bands."""
@@ -121,6 +128,7 @@ class AudioLevels:
         self._last_onset = 0.0
         self._period = 0.0
         self._beat_at = 0.0   # reference beat, free-running
+        self._flips = 0
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -228,8 +236,21 @@ class AudioLevels:
         # The median rejects the occasional double-time hit or missed beat
         # that a mean would smear through the estimate.
         if len(self._gaps) >= 4:
+            candidate = float(np.median(self._gaps))
             with self._lock:
-                self._period = float(np.median(self._gaps))
+                if self._period > 0:
+                    ratio = candidate / self._period
+                    halved = 0.40 < ratio < 0.62
+                    doubled = 1.60 < ratio < 2.50
+                    if halved or doubled:
+                        self._flips += 1
+                        if self._flips < DOUBLE_TIME_GUARD:
+                            candidate = self._period
+                        else:
+                            self._flips = 0
+                    else:
+                        self._flips = 0
+                self._period = candidate
 
         with self._lock:
             if self._period <= 0:

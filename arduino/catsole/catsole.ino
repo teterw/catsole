@@ -109,6 +109,13 @@ static uint32_t perfSendSum = 0;
 static uint32_t perfFrames = 0;
 static uint32_t perfSince = 0;
 
+/* Rolling frame rate for the clock screen. Kept apart from the perf
+   counters, which reset when queried and so cannot also feed a
+   display. */
+static uint16_t fpsFrames = 0;
+static uint32_t fpsWindowMs = 0;
+static uint8_t fpsValue = 0;
+
 
 /* ---- current frame -------------------------------------------------- */
 struct Frame {
@@ -845,6 +852,28 @@ static void drawClock() {
   u8g2.drawUTF8(x + 1, 60, frame.dateText);
   uint16_t dw = u8g2.getUTF8Width(frame.dateText);
   u8g2.drawUTF8(x + dw + 8, 60, frame.secText);
+
+  /* The board's own state, in the space beside the time. Nothing else
+     reports this, and a display that can describe itself is worth the
+     three lines it costs. */
+  char info[20];
+  u8g2.setFont(u8g2_font_4x6_tf);
+  u8g2.drawVLine(82, 28, 30);
+
+  snprintf(info, sizeof(info), "fw %s", FIRMWARE_VERSION);
+  u8g2.drawUTF8(86, 34, info);
+
+  uint32_t up = millis() / 1000UL;
+  if (up >= 3600UL) {
+    snprintf(info, sizeof(info), "up %luh%02lu", up / 3600UL,
+             (up % 3600UL) / 60UL);
+  } else {
+    snprintf(info, sizeof(info), "up %lum%02lus", up / 60UL, up % 60UL);
+  }
+  u8g2.drawUTF8(86, 42, info);
+
+  snprintf(info, sizeof(info), "%dfps", fpsValue);
+  u8g2.drawUTF8(86, 50, info);
 }
 
 /* Half a fan spins in from the right edge.
@@ -992,6 +1021,14 @@ static void render() {
   perfRenderSum += (t1 - t0);
   perfSendSum += (t2 - t1);
   perfFrames++;
+
+  fpsFrames++;
+  uint32_t windowMs = millis() - fpsWindowMs;
+  if (windowMs >= 1000) {
+    fpsValue = (uint8_t)((fpsFrames * 1000UL) / windowMs);
+    fpsFrames = 0;
+    fpsWindowMs = millis();
+  }
 }
 
 /* ==================================================================== *

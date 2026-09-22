@@ -22,6 +22,7 @@ from .hardware import HardwareReader, empty_stats
 from .link import NullLink, SerialLink
 from .lyrics import Lyrics, LyricsProvider, select_line
 from .media import MediaReader, NowPlaying, is_music
+from .protocol import fold_ascii
 
 log = logging.getLogger(__name__)
 
@@ -242,6 +243,14 @@ class DeskConsole:
         if self.lyrics.is_synced:
             position = playing.position_ms + self.config.lyric_offset_ms
             line, hold_ms = select_line(self.lyrics.synced, position)
+
+            # The panel's fonts are Latin-only, so a line in Thai, Chinese,
+            # Japanese or Korean reduces to nothing and would arrive as an
+            # empty band. Accented Latin is fine -- it folds to its base
+            # letters -- so this only catches scripts with no glyphs at all.
+            if line and not fold_ascii(line):
+                return self._title_card(playing, state, "script")
+
             return {
                 "t": "frame",
                 "mode": "lyrics",
@@ -257,12 +266,16 @@ class DeskConsole:
 
         # No timing available: show the track itself as the headline rather
         # than a lyric line we cannot place.
+        return self._title_card(playing, state, self.lyrics.kind)
+
+    def _title_card(self, playing: NowPlaying, state: str, kind: str) -> dict:
+        """Artist and title, for when no lyric line can be shown."""
         return {
             "t": "frame",
             "mode": "lyrics",
             "meta": playing.artist,
             "main": playing.title,
-            "lyr": self.lyrics.kind,
+            "lyr": kind,
             "state": state,
             "eq": 1 if playing.is_playing else 0,
             "hold_ms": 0,
