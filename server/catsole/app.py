@@ -141,6 +141,8 @@ class DeskConsole:
 
         self._track_key = now_playing.track_key
         self.lyrics = Lyrics(kind="none")
+        # A new song has no reason to share the last one's pulse.
+        self.audio.reset_beat()
         self._fetch_lyrics(now_playing)
 
     def _fetch_lyrics(self, now_playing: NowPlaying) -> None:
@@ -469,6 +471,7 @@ class DeskConsole:
                 "available": self.audio.available,
                 "device": self.audio.device_name,
                 "bpm": round(self.audio.bpm, 1),
+                "locked": self.audio.locked,
                 "levels": self.audio.levels(),
                 "error": self.audio.last_error,
             },

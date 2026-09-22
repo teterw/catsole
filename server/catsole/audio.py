@@ -83,6 +83,16 @@ PHASE_CORRECTION = 0.20
 # the current one has to persist before it is believed.
 DOUBLE_TIME_GUARD = 6
 
+# Once the gaps agree closely enough the tempo is taken as settled and
+# stops being re-estimated. Tracking it continuously means every vocal
+# transient gets a vote, and singing produces plenty of onsets that are
+# not the beat -- so a steady song would slowly drag its own tempo off.
+# After locking, the grid only creeps toward onsets rather than following
+# them, which keeps it honest against drift without chasing the vocal.
+LOCK_AFTER_GAPS = 8
+LOCK_SPREAD = 0.14      # relative standard deviation that counts as settled
+LOCKED_CORRECTION = 0.04
+
 
 def band_edges(rate: int, bands: int = BANDS) -> list[tuple[int, int]]:
     """FFT bin ranges for logarithmically spaced bands."""
@@ -129,6 +139,7 @@ class AudioLevels:
         self._period = 0.0
         self._beat_at = 0.0   # reference beat, free-running
         self._flips = 0
+        self._locked = False
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -158,6 +169,22 @@ class AudioLevels:
 
     def hex_levels(self) -> str:
         return to_hex(self.levels())
+
+    @property
+    def locked(self) -> bool:
+        """True once the tempo has settled and stopped being re-estimated."""
+        with self._lock:
+            return self._locked
+
+    def reset_beat(self) -> None:
+        """Forget the tempo. Called on a track change, since the next song
+        has no reason to share the last one's pulse."""
+        with self._lock:
+            self._locked = False
+            self._period = 0.0
+            self._beat_at = 0.0
+            self._flips = 0
+        self._gaps.clear()
 
     @property
     def bpm(self) -> float:
@@ -235,7 +262,7 @@ class AudioLevels:
 
         # The median rejects the occasional double-time hit or missed beat
         # that a mean would smear through the estimate.
-        if len(self._gaps) >= 4:
+        if len(self._gaps) >= 4 and not self._locked:
             candidate = float(np.median(self._gaps))
             with self._lock:
                 if self._period > 0:
@@ -252,6 +279,20 @@ class AudioLevels:
                         self._flips = 0
                 self._period = candidate
 
+                # Settled once enough gaps agree closely. From here the
+                # tempo is held and only the phase is nudged.
+                if len(self._gaps) >= LOCK_AFTER_GAPS:
+                    gaps = np.array(self._gaps, dtype=np.float32)
+                    mean = float(gaps.mean())
+                    spread = float(gaps.std() / mean) if mean > 0 else 1.0
+                    if spread <= LOCK_SPREAD:
+                        self._locked = True
+                        log.info(
+                            "tempo locked at %.1f BPM (spread %.0f%%)",
+                            60.0 / self._period,
+                            spread * 100,
+                        )
+
         with self._lock:
             if self._period <= 0:
                 return
@@ -266,7 +307,10 @@ class AudioLevels:
             offset = (now - self._beat_at) % self._period
             if offset > self._period / 2.0:
                 offset -= self._period
-            self._beat_at += offset * PHASE_CORRECTION
+            correction = (
+                LOCKED_CORRECTION if self._locked else PHASE_CORRECTION
+            )
+            self._beat_at += offset * correction
 
     def _run(self) -> None:
         audio = None
