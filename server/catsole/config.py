@@ -39,6 +39,17 @@ class Config:
     # players report position ahead of what you actually hear.
     lyric_offset_ms: int = 0
 
+    # Which sessions count as music. Windows reports the app, not the
+    # site, so a YouTube tab and an Instagram tab in the same browser look
+    # identical here -- the duration rule is what actually separates them.
+    # Anything shorter than this is treated as a story or a reel.
+    min_duration_s: float = 60.0
+    # Empty allows every app. Add e.g. "brave", "chrome", "spotify" to
+    # restrict it. Blocked apps are matched as substrings.
+    allow_apps: list = field(default_factory=list)
+    block_apps: list = field(default_factory=lambda: ["instagram"])
+    require_artist: bool = False
+
     start_mode: str = "lyrics"
     cache_dir: Path = field(default_factory=lambda: DEFAULT_CACHE_DIR)
     user_agent: str = "catsole/1.0 (https://github.com/teterw/catsole)"

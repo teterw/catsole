@@ -22,7 +22,7 @@ from .config import Config
 from .hardware import HardwareReader, empty_stats
 from .link import NullLink, SerialLink
 from .lyrics import Lyrics, LyricsProvider, select_line
-from .media import MediaReader, NowPlaying
+from .media import MediaReader, NowPlaying, is_music
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +119,17 @@ class DeskConsole:
 
     def _on_media(self, now_playing: NowPlaying | None) -> None:
         """Record the current track, refetching lyrics only on a real change."""
+        # Stories, reels and other short clips share the browser's identity
+        # with real music, so they are filtered on shape rather than app.
+        if not is_music(
+            now_playing,
+            min_duration_s=self.config.min_duration_s,
+            allow_apps=self.config.allow_apps,
+            block_apps=self.config.block_apps,
+            require_artist=self.config.require_artist,
+        ):
+            now_playing = None
+
         self.now_playing = now_playing
 
         if now_playing is None or now_playing.is_empty:

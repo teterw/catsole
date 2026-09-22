@@ -92,6 +92,48 @@ def extrapolate_position(
     return int(max(0, projected))
 
 
+def is_music(
+    now_playing: "NowPlaying | None",
+    min_duration_s: float = 60.0,
+    allow_apps: list[str] | None = None,
+    block_apps: list[str] | None = None,
+    require_artist: bool = False,
+) -> bool:
+    """Decide whether a session is music worth showing.
+
+    Windows reports the *application*, not the site, so a YouTube tab and
+    an Instagram tab in the same browser are indistinguishable by app id
+    alone. What does separate them is shape: songs run for minutes and
+    carry an artist, while stories and reels are seconds long and usually
+    carry neither. So this filters on duration and metadata, using the app
+    lists only for whole applications worth including or excluding.
+    """
+    if now_playing is None or now_playing.is_empty:
+        return False
+
+    app = (now_playing.app_id or "").casefold()
+
+    if block_apps:
+        if any(bad.casefold() in app for bad in block_apps if bad):
+            return False
+
+    if allow_apps:
+        if not any(good.casefold() in app for good in allow_apps if good):
+            return False
+
+    # A clip too short to be a song is almost certainly a story or a reel.
+    # Zero means the source never reported a length, which is common for
+    # live streams, so it is not treated as a failure.
+    if min_duration_s > 0 and now_playing.duration_ms:
+        if now_playing.duration_ms < min_duration_s * 1000:
+            return False
+
+    if require_artist and not now_playing.artist.strip():
+        return False
+
+    return True
+
+
 class MediaReader:
     """Polls the current SMTC session.
 

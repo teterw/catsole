@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from catsole.media import NowPlaying, extrapolate_position
+from catsole.media import NowPlaying, extrapolate_position, is_music
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -60,3 +60,47 @@ def test_nowplaying_track_key_changes_with_track():
 def test_nowplaying_is_empty_without_title():
     assert NowPlaying(artist="A", title="", album="", duration_ms=0).is_empty
     assert not NowPlaying(artist="A", title="One", album="", duration_ms=0).is_empty
+
+
+def song(**kw):
+    base = dict(artist="An Artist", title="A Song", duration_ms=210_000, app_id="Brave")
+    base.update(kw)
+    return NowPlaying(**base)
+
+
+def test_is_music_accepts_a_normal_track():
+    assert is_music(song())
+
+
+def test_is_music_rejects_short_clips():
+    # Stories and reels are seconds long; songs are minutes.
+    assert not is_music(song(duration_ms=17_000))
+
+
+def test_is_music_allows_unknown_duration():
+    # Live streams report no length, which is not a reason to hide them.
+    assert is_music(song(duration_ms=0))
+
+
+def test_is_music_rejects_nothing_playing():
+    assert not is_music(None)
+    assert not is_music(song(title=""))
+
+
+def test_is_music_blocks_listed_apps_by_substring():
+    assert not is_music(song(app_id="Instagram.Desktop"), block_apps=["instagram"])
+    assert is_music(song(app_id="Brave"), block_apps=["instagram"])
+
+
+def test_is_music_allowlist_excludes_everything_else():
+    assert is_music(song(app_id="Spotify.exe"), allow_apps=["spotify"])
+    assert not is_music(song(app_id="Brave"), allow_apps=["spotify"])
+
+
+def test_is_music_empty_allowlist_permits_all():
+    assert is_music(song(app_id="anything"), allow_apps=[])
+
+
+def test_is_music_can_require_an_artist():
+    assert not is_music(song(artist="   "), require_artist=True)
+    assert is_music(song(artist="   "), require_artist=False)

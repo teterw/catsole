@@ -169,13 +169,36 @@ def test_paused_playback_stops_the_equalizer(console):
 
 
 def test_track_change_triggers_one_lyrics_fetch(console):
-    first = NowPlaying(artist="An Artist", title="One", duration_ms=1000)
+    # Durations must be song-length: the source filter rejects anything
+    # short enough to be a story or a reel.
+    first = NowPlaying(artist="An Artist", title="One", duration_ms=210_000)
     console._on_media(first)
     console._on_media(first)
     assert len(console.lyrics_provider.calls) == 1
 
-    console._on_media(NowPlaying(artist="An Artist", title="Two", duration_ms=1000))
+    console._on_media(
+        NowPlaying(artist="An Artist", title="Two", duration_ms=195_000)
+    )
     assert len(console.lyrics_provider.calls) == 2
+
+
+def test_short_clips_are_ignored_entirely(console):
+    # A reel should not become now-playing, nor cost a lyrics lookup.
+    console._on_media(
+        NowPlaying(artist="", title="some clip", duration_ms=17_000)
+    )
+    assert console.now_playing is None
+    assert console.lyrics_provider.calls == []
+
+
+def test_blocked_app_is_ignored(console):
+    console.config.block_apps = ["instagram"]
+    console._on_media(
+        NowPlaying(
+            artist="x", title="y", duration_ms=200_000, app_id="Instagram.Desktop"
+        )
+    )
+    assert console.now_playing is None
 
 
 def test_frame_always_carries_a_mode(console):
