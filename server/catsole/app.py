@@ -238,7 +238,6 @@ class DeskConsole:
                 "lyr": "none",
                 "state": "idle",
                 "eq": 0,
-                "hold_ms": 0,
                 "pos": 0,
                 "dur": 0,
             }
@@ -247,7 +246,7 @@ class DeskConsole:
 
         if self.lyrics.is_synced:
             position = playing.position_ms + self.config.lyric_offset_ms
-            line, hold_ms = select_line(self.lyrics.synced, position)
+            line, _hold_ms = select_line(self.lyrics.synced, position)
 
             # The panel's fonts are Latin-only, so a line in Thai, Chinese,
             # Japanese or Korean reduces to nothing and would arrive as an
@@ -264,7 +263,6 @@ class DeskConsole:
                 "lyr": "synced",
                 "state": state,
                 "eq": 1 if playing.is_playing else 0,
-                "hold_ms": hold_ms,
                 "pos": playing.position_ms,
                 "dur": playing.duration_ms,
             }
@@ -283,7 +281,6 @@ class DeskConsole:
             "lyr": kind,
             "state": state,
             "eq": 1 if playing.is_playing else 0,
-            "hold_ms": 0,
             "pos": playing.position_ms,
             "dur": playing.duration_ms,
         }
@@ -472,6 +469,7 @@ class DeskConsole:
                 "device": self.audio.device_name,
                 "bpm": round(self.audio.bpm, 1),
                 "locked": self.audio.locked,
+                "phase": round(self.audio.beat_phase, 3),
                 "levels": self.audio.levels(),
                 "error": self.audio.last_error,
             },

@@ -129,7 +129,6 @@ struct Frame {
   char lyr[8];
   char state[10];
   uint8_t eq;
-  uint32_t holdMs;
   uint32_t receivedAtMs;
   uint32_t posMs;   /* track position when this frame was built */
   char timeText[8];  /* clock screen; the board has no RTC of its own */
@@ -180,7 +179,6 @@ static uint32_t catPhaseMs = 0;
    outgoing line is kept around long enough to slide it out while the new
    one slides in beneath it. */
 static const uint16_t TRANSITION_MS = 260;
-static char prevMainText[104];
 static uint32_t transitionStartMs = 0;
 
 /* Set when the main line changes; the layout is rebuilt on the next draw
@@ -339,13 +337,11 @@ static void handleLine(const char *line) {
   char incoming[sizeof(frame.mainText)];
   copyField(incoming, sizeof(incoming), doc["main"] | "");
   if (strcmp(incoming, frame.mainText) != 0) {
-    copyField(prevMainText, sizeof(prevMainText), frame.mainText);
     transitionStartMs = millis();
     wrapDirty = true;
   }
   copyField(frame.mainText, sizeof(frame.mainText), incoming);
   frame.eq = doc["eq"] | 0;
-  frame.holdMs = doc["hold_ms"] | 0UL;
   frame.posMs = doc["pos"] | 0UL;
   copyField(frame.timeText, sizeof(frame.timeText), doc["time"] | "");
   copyField(frame.secText, sizeof(frame.secText), doc["sec"] | "");

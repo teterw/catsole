@@ -125,7 +125,6 @@ def test_lyrics_frame_shows_current_synced_line(console):
     assert frame["main"] == "placeholder line two"
     assert frame["meta"] == "An Artist - A Title"
     assert frame["lyr"] == "synced"
-    assert frame["hold_ms"] > 0
 
 
 def test_lyric_offset_shifts_line_selection(console):

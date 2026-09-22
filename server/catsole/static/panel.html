@@ -253,11 +253,6 @@
     ctx.fillRect(0, 0, W, H);
   }
 
-  function textWidth(text, font) {
-    ctx.font = font;
-    return ctx.measureText(text).width;
-  }
-
   function drawMarquee(text, y, font, color, boxW) {
     ctx.font = font;
     ctx.fillStyle = color;
@@ -365,23 +360,31 @@
     // The cat stands in front of the bars: the equalizer is decoration,
     // so occluding its right end costs nothing.
     ctx.fillStyle = GLASS;
-    // Hop on detected beats, mirroring the firmware.
+    // Eased phase arc, mirroring the firmware: free-run on elapsed time
+    // and ease toward the reported phase rather than snapping onto it.
     var playing = frame.state === "playing";
-    var bass = 0;
-    if (playing && levels && levels.length >= 3) {
-      bass = (levels[0] + levels[1] + levels[2]) / 3 / 15;
-    }
-    bassAvg += (bass - bassAvg) * 0.04;
     var nowMs = Date.now();
-    if (bass > bassAvg * 1.30 && bass > 0.22 && nowMs - lastHopMs > 190) {
-      hop = 1; lastHopMs = nowMs;
+    var dt = Math.min(0.2, (nowMs - catPhaseMs) / 1000);
+    catPhaseMs = nowMs;
+    var periodMs = state && state.audio && state.audio.bpm > 0
+      ? 60000 / state.audio.bpm : 0;
+    if (playing && periodMs > 0 && !reduceMotion) {
+      catPhase += dt * 1000 / periodMs;
+      while (catPhase >= 1) catPhase -= 1;
+      var reported = (state.audio.phase || 0);
+      var err = reported - catPhase;
+      if (err > 0.5) err -= 1;
+      if (err < -0.5) err += 1;
+      catPhase += err * 0.07;
+      if (catPhase < 0) catPhase += 1;
+      if (catPhase >= 1) catPhase -= 1;
     }
-    hop *= 0.86;
-    var lift = Math.round(hop * 4);
+    var lift_f = playing && periodMs > 0 ? Math.sin(catPhase * Math.PI) : 0;
+    var lift = Math.round(lift_f * 8);
 
     ctx.fillStyle = GLASS;
-    ctx.fillRect(CAT_PERCH_X - 3, 43, W - CAT_PERCH_X + 3, H - 43);
-    drawCatArt(CAT[hop > 0.5 ? 2 : labPose(playing, false)],
+    ctx.fillRect(CAT_PERCH_X - 3, 40, W - CAT_PERCH_X + 3, H - 40);
+    drawCatArt(CAT[lift_f < 0.25 && playing ? 2 : labPose(playing, false)],
                CAT_PERCH_X, 55 - lift, 6, 7, ctx, 4);
   }
 
@@ -559,15 +562,8 @@
 
   // ---- cover, clock and fan screens, mirroring the firmware ------------
 
-  function drawProgressBar(c, frame) {
-    if (!frame.dur) return;
-    var pos = frame.pos || 0;
-    var w = Math.round((pos / frame.dur) * (W - 4));
-    if (w > 0) { c.fillStyle = PHOSPHOR; c.fillRect(2, 12, w, 2); }
-  }
-
-  var spinCover = 0, spinFan = 0, bop = 0;
-  var bassAvg = 0, hop = 0, lastHopMs = 0;
+  var spinFan = 0;
+  var catPhase = 0, catPhaseMs = Date.now();
 
   function drawClockScreen(c, frame) {
     if (!frame.time) return;
