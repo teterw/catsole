@@ -25,7 +25,7 @@ from .media import MediaReader, NowPlaying, is_music
 
 log = logging.getLogger(__name__)
 
-MODES = ("lyrics", "beat", "stats", "clock")
+MODES = ("lyrics", "stats", "clock")
 
 
 def next_mode(current: str) -> str:
@@ -191,10 +191,7 @@ class DeskConsole:
             return self._clock_frame()
         if self.mode == "stats":
             return self._stats_frame()
-        frame = self._lyrics_frame()
-        if self.mode == "beat":
-            frame["mode"] = "beat"
-        return frame
+        return self._lyrics_frame()
 
     def _stats_frame(self) -> dict:
         cpu = self.stats.get("cpu", {})
@@ -299,7 +296,16 @@ class DeskConsole:
                 and self.now_playing.is_playing
             )
             if playing and self.audio.available:
-                self.link.send({"t": "eq", "b": self.audio.hex_levels()})
+                # Phase rides with the spectrum: the device bobs on the
+                # tracked beat grid rather than on raw bass spikes.
+                self.link.send({
+                    "t": "eq",
+                    "b": self.audio.hex_levels(),
+                    "p": int(self.audio.beat_phase * 100),
+                    "ms": int(60000 / self.audio.bpm)
+                    if self.audio.bpm > 0
+                    else 0,
+                })
             self._next_eq = now + self.config.eq_interval_s
 
         if self.config.idle_rotate_s > 0 and now >= self._manual_until:

@@ -89,9 +89,9 @@ static const uint8_t EQ_BAR_W = 2;
 static const uint8_t EQ_GAP = 1;
 static const uint8_t EQ_ROW_H = 12; /* y 52..63 */
 /* Where the mascot perches on the lyrics screen, in front of the bars. */
-static const uint8_t CAT_PERCH_X = 98;
+static const uint8_t CAT_PERCH_X = 96;
 /* Stats bars stop short of the mascot's column. */
-static const uint8_t STAT_BAR_W = 88;
+static const uint8_t STAT_BAR_W = 100;
 
 /* ---- link state ---------------------------------------------------- */
 enum LinkState { LINK_BOOT, LINK_WAITING, LINK_LIVE, LINK_STALE };
@@ -126,6 +126,7 @@ struct Frame {
   char dateText[20];
   char fanName[3][14];
   int16_t fanRpm[3];
+  int16_t fanPct[3];  /* GPU fans report a percentage, not RPM */
   uint8_t fanCount;
   uint32_t durMs;   /* track length, 0 when unknown */
 
@@ -151,6 +152,11 @@ static const uint8_t EQ_BANDS = 16;
 static const uint32_t EQ_FRESH_MS = 600;
 static uint8_t eqBand[EQ_BANDS];
 static uint32_t lastEqMs = 0;
+/* Where we are within the current beat, 0 on the beat rising to 99.
+   Estimated on the PC, which can afford the tempo tracking. */
+static uint8_t beatPhase = 0;
+static uint32_t beatPhaseAtMs = 0;
+static uint16_t beatPeriodMs = 0;
 
 /* A lyric line that swaps instantly is jarring at this size, so the
    outgoing line is kept around long enough to slide it out while the new
@@ -274,6 +280,9 @@ static void handleLine(const char *line) {
       else if (c >= 'A' && c <= 'F') v = (uint8_t)(c - 'A' + 10);
       eqBand[i] = v;
     }
+    beatPhase = doc["p"] | 0;
+    beatPhaseAtMs = millis();
+    beatPeriodMs = doc["ms"] | 0;
     lastEqMs = millis();
     /* Spectrum counts as traffic, so a quiet passage does not look like a
        dropped link. */
@@ -329,6 +338,7 @@ static void handleLine(const char *line) {
     if (frame.fanCount >= 3) break;
     copyField(frame.fanName[frame.fanCount], 14, fan["name"] | "fan");
     frame.fanRpm[frame.fanCount] = fan["rpm"] | -1;
+    frame.fanPct[frame.fanCount] = fan["pct"] | -1;
     frame.fanCount++;
   }
   frame.durMs = doc["dur"] | 0UL;
@@ -568,21 +578,22 @@ enum CatPose {
   CAT_POSE_COUNT
 };
 
-static const char *const CAT_ART[CAT_POSE_COUNT][3] = {
-    /* Ears sit at the outer corners, over the sides of the head. Tucked
-       inboard they landed directly above the eyes and read as wrong. */
-    {"/\\___/\\", "( o.o )", " > ^ < "},  /* idle    */
-    {"/\\___/\\", "( -.- )", " > ^ < "},  /* blink   */
-    {"/\\___/\\", "( ^.^ )", " > ~ < "},  /* music   */
-    {"/\\___/\\", "( u.u )", " > _ < "},  /* asleep  */
-    {"/\\___/\\", "( -.o )", " > ^ < "},  /* squint  */
+/* Two rows, five columns. Three rows at the 4x6 face came to 28x18px
+   and read as a scribble on the real panel; fewer, larger characters
+   survive the pixel budget far better. */
+static const char *const CAT_ART[CAT_POSE_COUNT][2] = {
+    {" /\\_/\\ ", "(=o.o=)"},  /* idle   */
+    {" /\\_/\\ ", "(=-.-=)"},  /* blink  */
+    {" /\\_/\\ ", "(=^.^=)"},  /* music  */
+    {" /\\_/\\ ", "(=u.u=)"},  /* asleep */
+    {" /\\_/\\ ", "(=-.o=)"},  /* squint */
 };
 
 static void drawCat(int16_t x, int16_t y, uint8_t pose, const uint8_t *font,
                     uint8_t lineH) {
   if (pose >= CAT_POSE_COUNT) pose = CAT_IDLE;
   u8g2.setFont(font);
-  for (uint8_t row = 0; row < 3; row++) {
+  for (uint8_t row = 0; row < 2; row++) {
     u8g2.drawUTF8(x, y + row * lineH, CAT_ART[pose][row]);
   }
 }
@@ -675,7 +686,9 @@ static void drawLyrics() {
        recomputed. */
     if (wrapDirty) {
       wrapPrev = wrapCurrent;
-      prepareWrap(frame.mainText, SCREEN_W - 4, wrapCurrent);
+      /* Wrap clear of the mascot's column. Masking over the text
+         afterwards blanked the end of any line that reached it. */
+      prepareWrap(frame.mainText, CAT_PERCH_X - 6, wrapCurrent);
       wrapDirty = false;
     }
 
@@ -695,6 +708,7 @@ static void drawLyrics() {
       u8g2.setMaxClipWindow();
     } else {
       drawWrapped(wrapCurrent, 0);
+
     }
 
     if (strcmp(frame.lyr, "synced") == 0) {
@@ -715,10 +729,53 @@ static void drawLyrics() {
      where taking layout space from the lyric would cost the screen's
      whole point. Centred text never reaches past y45, so the two do not
      collide even on a four-line lyric. */
-  u8g2.setDrawColor(0);
-  u8g2.drawBox(CAT_PERCH_X - 2, 45, SCREEN_W - CAT_PERCH_X + 2, SCREEN_H - 45);
-  u8g2.setDrawColor(1);
-  drawCat(CAT_PERCH_X, 51, catPose(playing, false), u8g2_font_4x6_tf, 6);
+
+  /* Bob on the tracked beat grid.
+   *
+   * Watching for bass spikes here looked erratic, because detection is
+   * never perfect and a missed or doubled hit shows up immediately. The
+   * PC estimates the tempo instead and sends the phase, so this only has
+   * to shape it: a quick rise on the beat that settles before the next
+   * one reads as bobbing in time rather than reacting at random. */
+  bool liveEq = (millis() - lastEqMs) < EQ_FRESH_MS;
+  float lift_f = 0.0f;
+  if (playing && liveEq) {
+    /* Carry the phase forward between messages: they arrive 20 times a
+       second against 30 frames, so using them raw made the bob step. */
+    float phase = beatPhase / 100.0f;
+    if (beatPeriodMs > 0) {
+      phase += (float)(millis() - beatPhaseAtMs) / (float)beatPeriodMs;
+      phase -= (int)phase;
+    }
+    float env = 1.0f - (phase * 2.6f);
+    if (env < 0.0f) env = 0.0f;
+    lift_f = env * env;
+  }
+  int16_t lift = (int16_t)(lift_f * 5.0f);
+  float hop = lift_f;
+
+  /* The idle screen already gives the mascot the stage, so the perched
+     one is skipped there rather than putting two cats on one screen. */
+  if (!idle) {
+    u8g2.setDrawColor(0);
+    u8g2.drawBox(CAT_PERCH_X - 3, 43, SCREEN_W - CAT_PERCH_X + 3,
+                 SCREEN_H - 43);
+    u8g2.setDrawColor(1);
+
+    /* Eyes widen on the landing, which reads as reacting to the beat. */
+    uint8_t pose = (hop > 0.5f) ? CAT_HAPPY : catPose(playing, false);
+    drawCat(CAT_PERCH_X, 55 - lift, pose, u8g2_font_4x6_tf, 7);
+  }
+}
+
+/* Whole gigabytes, for rows that have to share their line with the cat. */
+static void fmtPairGBWhole(char *out, size_t n, float usedMB, float totalMB) {
+  if (isnan(usedMB) || isnan(totalMB)) {
+    snprintf(out, n, "--");
+    return;
+  }
+  snprintf(out, n, "%d/%dGB", (int)(usedMB / 1024.0f + 0.5f),
+           (int)(totalMB / 1024.0f + 0.5f));
 }
 
 /* Format a used/total pair held in MB as GB, or "--" if either is absent. */
@@ -734,7 +791,7 @@ static void fmtPairGB(char *out, size_t n, float usedMB, float totalMB) {
 }
 
 /* One labelled row: name, a preformatted value, and a usage bar.
-   Four rows share 52px, so the pitch is 12 and the bars are 4 tall. */
+   Three rows share the band, so the pitch is 16 and bars are 5 tall. */
 static void drawStatRow(uint8_t baseline, const char *label, const char *value,
                         float load) {
   u8g2.setFont(u8g2_font_5x7_tf);
@@ -744,86 +801,13 @@ static void drawStatRow(uint8_t baseline, const char *label, const char *value,
   /* An unknown load still draws the empty frame, so the row reads as a row
      rather than vanishing. */
   const uint8_t barY = baseline + 2;
-  u8g2.drawFrame(2, barY, STAT_BAR_W, 4);
+  u8g2.drawFrame(2, barY, STAT_BAR_W, 5);
   if (!isnan(load)) {
     float pct = load;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     uint8_t w = (uint8_t)((pct / 100.0f) * (STAT_BAR_W - 4));
-    if (w > 0) u8g2.drawBox(4, barY + 1, w, 2);
-  }
-}
-
-/* Beat screen: the cat bopping, with a record sliding out behind it.
- *
- * The bounce is driven by the bass bands of the live spectrum rather than
- * a timer, so it lands on the actual beat instead of near it. Smoothed,
- * because raw band values jitter enough to look like shivering.
- *
- * The record is drawn procedurally rather than rotated as a bitmap: a
- * circle with three spokes from an advancing angle costs far less than
- * rotating pixels every frame. It is drawn first and then masked where
- * the cat sits, which is what makes it read as being behind.
- */
-static void drawBeat() {
-  const int16_t catBoxX = 2;
-  const int16_t catBoxW = 48;
-  const int16_t catBoxY = 16;
-  const int16_t catBoxH = 46;
-
-  /* 30% of the disc hides behind the cat, so 70% of it shows. */
-  const int16_t r = 20;
-  const int16_t hidden = (r * 2 * 3) / 10;
-  const int16_t cx = catBoxX + catBoxW - hidden + r;
-  const int16_t cy = 38;
-
-  u8g2.setFont(u8g2_font_5x7_tf);
-  drawMarquee(frame.meta, META_BASELINE, SCREEN_W - 4);
-  u8g2.drawHLine(0, RULE_Y, SCREEN_W);
-  drawProgress();
-
-  bool playing = strcmp(frame.state, "playing") == 0;
-  bool live = (millis() - lastEqMs) < EQ_FRESH_MS;
-
-  /* Bass drives the bounce. The lowest bands carry the kick, which is
-     what the eye reads as "on the beat". */
-  static float bop = 0.0f;
-  float bass = 0.0f;
-  if (playing && live) {
-    bass = (eqBand[0] + eqBand[1] + eqBand[2]) / 3.0f / 15.0f;
-  }
-  bop += (bass - bop) * 0.38f;
-  int16_t lift = (int16_t)(bop * 9.0f);
-
-  /* Record: only turns while playing, so a paused track visibly stops. */
-  static float angle = 0.0f;
-  if (playing) angle += 0.055f;
-  if (angle > 6.2832f) angle -= 6.2832f;
-
-  u8g2.drawCircle(cx, cy, r, U8G2_DRAW_ALL);
-  u8g2.drawCircle(cx, cy, r - 4, U8G2_DRAW_ALL);
-  u8g2.drawDisc(cx, cy, 3, U8G2_DRAW_ALL);
-  for (uint8_t i = 0; i < 3; i++) {
-    float a = angle + i * 2.0944f;
-    u8g2.drawLine(cx + (int16_t)(cos(a) * 5), cy + (int16_t)(sin(a) * 5),
-                  cx + (int16_t)(cos(a) * (r - 5)),
-                  cy + (int16_t)(sin(a) * (r - 5)));
-  }
-
-  /* Punch the disc out where the cat goes, so the cat sits in front. */
-  u8g2.setDrawColor(0);
-  u8g2.drawBox(catBoxX - 1, catBoxY - 12, catBoxW + 2, catBoxH + 12);
-  u8g2.setDrawColor(1);
-
-  /* A hard beat opens the eyes wide; otherwise the usual idle rhythm. */
-  uint8_t pose = (bop > 0.55f) ? CAT_HAPPY : catPose(playing, false);
-  drawCat(catBoxX + 4, catBoxY + 12 - lift, pose, u8g2_font_6x12_tf, 11);
-
-  /* A shadow that shrinks as the cat rises sells the hop as a hop. */
-  int16_t shadow = 20 - lift;
-  if (shadow > 4) {
-    u8g2.drawHLine(catBoxX + 8 + (lift / 3), catBoxY + 48,
-                   (int16_t)(shadow + 8));
+    if (w > 0) u8g2.drawBox(4, barY + 1, w, 3);
   }
 }
 
@@ -837,22 +821,45 @@ static void drawBeat() {
 static void drawClock() {
   if (frame.timeText[0] == 0) return;
 
-  u8g2.setFont(u8g2_font_logisoso24_tn);
-  uint16_t w = u8g2.getUTF8Width(frame.timeText);
-  int16_t x = 4;
-  u8g2.drawUTF8(x, 40, frame.timeText);
+  /* The cat gets the top right at the larger face. The seconds move down
+     to the date line rather than sitting beside the hours, which is what
+     left no room for it before. */
+  drawCat(84, 10, catPose(strcmp(frame.state, "playing") == 0, false),
+          u8g2_font_6x12_tf, 12);
 
-  /* Seconds sit small beside the hours, so the eye is not dragged to
-     something changing every second. */
-  u8g2.setFont(u8g2_font_6x12_tf);
-  u8g2.drawUTF8(x + w + 4, 40, frame.secText);
+  u8g2.setFont(u8g2_font_logisoso24_tn);
+  int16_t x = 4;
+  u8g2.drawUTF8(x, 48, frame.timeText);
 
   u8g2.setFont(u8g2_font_5x7_tf);
-  u8g2.drawUTF8(x + 1, 56, frame.dateText);
+  u8g2.drawUTF8(x + 1, 60, frame.dateText);
+  uint16_t dw = u8g2.getUTF8Width(frame.dateText);
+  u8g2.drawUTF8(x + dw + 8, 60, frame.secText);
+}
 
-  /* The cat keeps the clock company rather than leaving dead space. */
-  drawCat(92, 12, catPose(strcmp(frame.state, "playing") == 0, false),
-          u8g2_font_4x6_tf, 7);
+/* Half a fan spins in from the right edge.
+   Drawn centred on x=128 so exactly half of it falls off the panel; u8g2
+   clips the rest, which costs nothing and reads as a fan tucked behind
+   the bezel. Rate follows the fastest fan, idling slowly with no data so
+   it never looks seized. */
+static void drawHalfFan(int16_t rpm) {
+  const int16_t cx = SCREEN_W;
+  const int16_t cy = 38;
+  const int16_t r = 21;
+
+  static float angle = 0.0f;
+  angle += (rpm > 0) ? (0.02f + (rpm / 2200.0f) * 0.22f) : 0.012f;
+  if (angle > 6.2832f) angle -= 6.2832f;
+
+  u8g2.drawCircle(cx, cy, r, U8G2_DRAW_ALL);
+  u8g2.drawCircle(cx, cy, r - 4, U8G2_DRAW_ALL);
+  u8g2.drawDisc(cx, cy, 3, U8G2_DRAW_ALL);
+  for (uint8_t i = 0; i < 5; i++) {
+    float a = angle + i * 1.2566f;
+    u8g2.drawLine(cx + (int16_t)(cos(a) * 5), cy + (int16_t)(sin(a) * 5),
+                  cx + (int16_t)(cos(a + 0.5f) * (r - 3)),
+                  cy + (int16_t)(sin(a + 0.5f) * (r - 3)));
+  }
 }
 
 static void drawStats() {
@@ -860,12 +867,38 @@ static void drawStats() {
   char tempStr[12];
   char pair[20];
 
+  /* Spin rate comes from whichever unit the source reports. A percentage
+     is scaled to the same range so the disc turns comparably either way. */
+  int16_t fastest = 0;
+  for (uint8_t i = 0; i < frame.fanCount; i++) {
+    if (frame.fanRpm[i] > fastest) fastest = frame.fanRpm[i];
+    if (frame.fanPct[i] > 0 && (frame.fanPct[i] * 22) > fastest) {
+      fastest = frame.fanPct[i] * 22;
+    }
+  }
+
   u8g2.setFont(u8g2_font_5x7_tf);
   u8g2.drawUTF8(2, META_BASELINE, "system");
+
+  /* Fan speed rides in the header rather than taking a row of its own.
+     A bar would imply a percentage, which RPM is not, and the spinning
+     disc already carries the same reading visually. */
+  if (frame.fanCount == 0) {
+    u8g2.drawUTF8(52, META_BASELINE, "fan --");
+  } else if (frame.fanRpm[0] >= 0) {
+    snprintf(value, sizeof(value), "fan %drpm", fastest);
+    u8g2.drawUTF8(52, META_BASELINE, value);
+  } else {
+    /* A GPU reports its fan as a percentage. Zero is a real reading:
+       modern cards stop the fan entirely when they are cool. */
+    snprintf(value, sizeof(value), "%s fan %d%%", frame.fanName[0],
+             frame.fanPct[0]);
+    u8g2.drawUTF8(52, META_BASELINE, value);
+  }
   u8g2.drawHLine(0, RULE_Y, SCREEN_W);
 
-  /* Four rows on a 12px pitch: baselines 20, 32, 44 and 56 put the last
-     bar at 58..61, just inside the panel. */
+  /* Three rows on a 16px pitch. Dropping the fourth row bought back the
+     breathing space the screen was missing. */
   fmtNum(tempStr, sizeof(tempStr), frame.cpuTemp, 0, "C");
   if (isnan(frame.cpuClock)) {
     snprintf(value, sizeof(value), "%s  --", tempStr);
@@ -874,39 +907,17 @@ static void drawStats() {
     dtostrf(frame.cpuClock / 1000.0f, 0, 2, ghz);
     snprintf(value, sizeof(value), "%s  %sGHz", tempStr, ghz);
   }
-  drawStatRow(20, "cpu", value, frame.cpuLoad);
-
-  /* The mascot takes the column the bars gave up, vertically centred
-     against the four rows. */
-  drawCat(CAT_PERCH_X, 34, catPose(false, false), u8g2_font_4x6_tf, 6);
+  drawStatRow(24, "cpu", value, frame.cpuLoad);
 
   fmtNum(tempStr, sizeof(tempStr), frame.gpuTemp, 0, "C");
-  fmtPairGB(pair, sizeof(pair), frame.vramUsed, frame.vramTotal);
+  fmtPairGBWhole(pair, sizeof(pair), frame.vramUsed, frame.vramTotal);
   snprintf(value, sizeof(value), "%s  %s", tempStr, pair);
-  drawStatRow(32, "gpu", value, frame.gpuLoad);
+  drawStatRow(40, "gpu", value, frame.gpuLoad);
 
   fmtPairGB(pair, sizeof(pair), frame.ramUsed, frame.ramTotal);
-  drawStatRow(44, "ram", pair, frame.ramPercent);
+  drawStatRow(56, "ram", pair, frame.ramPercent);
 
-  /* Fans share this screen rather than having one of their own. The bar
-     is scaled against a typical case-fan ceiling, since fans report RPM
-     rather than a percentage. */
-  if (frame.fanCount == 0) {
-    drawStatRow(56, "fan", "--  needs LHM", NAN);
-  } else {
-    int16_t fastest = 0;
-    for (uint8_t i = 0; i < frame.fanCount; i++) {
-      if (frame.fanRpm[i] > fastest) fastest = frame.fanRpm[i];
-    }
-    if (frame.fanCount > 1) {
-      snprintf(value, sizeof(value), "%drpm +%d", fastest,
-               frame.fanCount - 1);
-    } else {
-      snprintf(value, sizeof(value), "%d rpm", fastest);
-    }
-    float pct = (fastest * 100.0f) / 2500.0f;
-    drawStatRow(56, "fan", value, pct > 100.0f ? 100.0f : pct);
-  }
+  drawHalfFan(fastest);
 }
 
 static void drawWaiting() {
@@ -952,7 +963,6 @@ static void render() {
     case LINK_LIVE:
     case LINK_STALE:
       if (strcmp(frame.mode, "stats") == 0) drawStats();
-      else if (strcmp(frame.mode, "beat") == 0) drawBeat();
       else if (strcmp(frame.mode, "clock") == 0) drawClock();
       else drawLyrics();
       break;
@@ -984,7 +994,7 @@ static void render() {
 static void bootAnimation() {
   const char *title = "catsole";
   const uint8_t titleLen = 7;
-  const int16_t catX = 43;
+  const int16_t catX = 43;  /* 7 chars at 6x12 is 42px, centred */
   const int16_t restY = 20;
   const uint8_t lineH = 11;
 

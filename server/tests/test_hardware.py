@@ -90,11 +90,12 @@ def test_parse_number_returns_none_on_junk():
 
 
 def test_parse_nvidia_smi_reads_all_fields():
-    assert parse_nvidia_smi("68, 99, 4211, 8188") == {
+    assert parse_nvidia_smi("68, 99, 4211, 8188, 42") == {
         "temp": 68.0,
         "load": 99.0,
         "vram_used": 4211.0,
         "vram_total": 8188.0,
+        "fan": 42.0,
     }
 
 
@@ -105,10 +106,16 @@ def test_parse_nvidia_smi_returns_empty_on_garbage():
 
 def test_parse_nvidia_smi_keeps_readable_fields_when_one_is_unsupported():
     # Laptop and some desktop GPUs report [N/A] for individual fields.
-    got = parse_nvidia_smi("68, [N/A], 4211, 8188")
+    got = parse_nvidia_smi("68, [N/A], 4211, 8188, [N/A]")
     assert got["temp"] == 68.0
     assert got["vram_total"] == 8188.0
     assert "load" not in got
+    assert "fan" not in got
+
+
+def test_parse_nvidia_smi_keeps_a_stopped_fan():
+    # Zero is a real reading: modern cards stop the fan when idle.
+    assert parse_nvidia_smi("48, 4, 1458, 16380, 0")["fan"] == 0.0
 
 
 def test_empty_stats_has_all_sections_with_none_fields():

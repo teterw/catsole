@@ -14,9 +14,11 @@ first bar and leave the rest flat.
 
 from __future__ import annotations
 
+import collections
 import logging
 import math
 import threading
+import time
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +59,16 @@ TILT_DB_PER_BAND = 2.3
 PEAK_DECAY = 0.995
 MIN_PEAK = 0.30
 
+# Beat tracking. Onsets come from positive spectral flux in the lower
+# bands -- energy appearing where there was less a moment ago, which is
+# what a drum hit is. Hopping on every onset looks erratic, because
+# detection is never perfect, so the gaps between onsets are used to
+# estimate a period and the beat is predicted on that grid instead.
+FLUX_HISTORY = 48
+ONSET_SENSITIVITY = 1.45
+MIN_BEAT_GAP_S = 0.26   # 230 BPM ceiling
+MAX_BEAT_GAP_S = 1.10   # 55 BPM floor
+
 
 def band_edges(rate: int, bands: int = BANDS) -> list[tuple[int, int]]:
     """FFT bin ranges for logarithmically spaced bands."""
@@ -96,6 +108,12 @@ class AudioLevels:
         self.device_name = ""
         self.last_error = ""
 
+        self._flux_hist = collections.deque(maxlen=FLUX_HISTORY)
+        self._gaps = collections.deque(maxlen=10)
+        self._prev_bands = None
+        self._last_onset = 0.0
+        self._period = 0.0
+
     # ---- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
@@ -126,6 +144,26 @@ class AudioLevels:
         return to_hex(self.levels())
 
     @property
+    def bpm(self) -> float:
+        """Estimated tempo, or 0 before enough beats have been seen."""
+        with self._lock:
+            return 60.0 / self._period if self._period > 0 else 0.0
+
+    @property
+    def beat_phase(self) -> float:
+        """Position within the current beat: 0 on the beat, rising to 1.
+
+        Predicted from the tracked period rather than from the last
+        detection alone, so a missed onset does not stall the animation --
+        it keeps moving on the grid and resynchronises when the next
+        onset lands.
+        """
+        with self._lock:
+            if self._period <= 0 or self._last_onset <= 0:
+                return 0.0
+            return ((time.monotonic() - self._last_onset) / self._period) % 1.0
+
+    @property
     def silent(self) -> bool:
         with self._lock:
             return all(v < 0.5 for v in self._levels)
@@ -147,6 +185,43 @@ class AudioLevels:
             if chosen is None:
                 chosen = dev
         return chosen
+
+    def _track_beat(self, bands: list[float]) -> None:
+        """Find onsets and keep a running estimate of the beat period."""
+        current = np.array(bands[:8], dtype=np.float32)
+        if self._prev_bands is None:
+            self._prev_bands = current
+            return
+
+        # Only rises count: energy fading away is not an onset.
+        flux = float(np.sum(np.maximum(0.0, current - self._prev_bands)))
+        self._prev_bands = current
+        self._flux_hist.append(flux)
+
+        if len(self._flux_hist) < 12:
+            return
+
+        history = np.array(self._flux_hist, dtype=np.float32)
+        threshold = history.mean() + ONSET_SENSITIVITY * history.std()
+        now = time.monotonic()
+
+        if flux <= threshold or flux < 0.04:
+            return
+        if now - self._last_onset < MIN_BEAT_GAP_S:
+            return
+
+        if self._last_onset > 0:
+            gap = now - self._last_onset
+            if MIN_BEAT_GAP_S <= gap <= MAX_BEAT_GAP_S:
+                self._gaps.append(gap)
+
+        self._last_onset = now
+
+        # The median rejects the occasional double-time hit or missed beat
+        # that a mean would smear through the estimate.
+        if len(self._gaps) >= 4:
+            with self._lock:
+                self._period = float(np.median(self._gaps))
 
     def _run(self) -> None:
         audio = None
@@ -210,6 +285,8 @@ class AudioLevels:
                     target = min(1.0, value * gain) * (LEVELS - 1)
                     rate_of_change = ATTACK if target > smoothed[i] else RELEASE
                     smoothed[i] += (target - smoothed[i]) * rate_of_change
+
+                self._track_beat(raw)
 
                 with self._lock:
                     self._levels = [float(v) for v in smoothed]

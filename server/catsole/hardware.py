@@ -30,8 +30,10 @@ LHM_TIMEOUT = 0.4
 # Once LHM is found to be down, stop hammering a closed port for a while.
 LHM_RETRY_AFTER_S = 30.0
 
-NVIDIA_QUERY = "temperature.gpu,utilization.gpu,memory.used,memory.total"
-NVIDIA_FIELDS = ("temp", "load", "vram_used", "vram_total")
+NVIDIA_QUERY = (
+    "temperature.gpu,utilization.gpu,memory.used,memory.total,fan.speed"
+)
+NVIDIA_FIELDS = ("temp", "load", "vram_used", "vram_total", "fan")
 NVIDIA_TIMEOUT = 2.0
 
 # Sensor names differ across LHM versions and chips; first match wins.
@@ -222,7 +224,15 @@ class HardwareReader:
         first_line = result.stdout.strip().splitlines()
         if not first_line:
             return
-        stats["gpu"].update(parse_nvidia_smi(first_line[0]))
+        gpu = parse_nvidia_smi(first_line[0])
+        fan_pct = gpu.pop("fan", None)
+        stats["gpu"].update(gpu)
+
+        # The GPU reports its own fan as a percentage, which needs no
+        # elevated driver. Zero is a real reading on modern cards -- they
+        # stop the fan entirely when idle -- so it is kept, not discarded.
+        if fan_pct is not None:
+            stats["fans"] = [{"name": "gpu", "pct": round(fan_pct)}]
 
     def _read_lhm(self, stats: dict) -> None:
         """Fill anything LHM can provide that the cheaper sources could not."""
@@ -262,6 +272,7 @@ class HardwareReader:
             if gpu_temp is not None:
                 stats["gpu"]["temp"] = round(gpu_temp, 1)
 
+        # LibreHardwareMonitor sees every case fan, so it wins when present.
         fans = find_fans(rows)
         if fans:
             stats["fans"] = fans
