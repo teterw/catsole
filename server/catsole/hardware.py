@@ -53,6 +53,7 @@ def empty_stats() -> dict:
         "cpu": {"temp": None, "load": None, "clock": None},
         "gpu": {"temp": None, "load": None, "vram_used": None, "vram_total": None},
         "ram": {"used": None, "total": None, "percent": None},
+        "fans": [],
     }
 
 
@@ -111,6 +112,28 @@ def find_sensor(
             if number is not None:
                 return number
     return None
+
+
+def find_fans(rows: list[tuple[str, str, str]], limit: int = 3) -> list[dict]:
+    """Pull fan speeds out of a flattened LibreHardwareMonitor tree.
+
+    Matched on the unit rather than the name: boards label fans
+    inconsistently ("Fan #2", "Chassis Fan", "Pump"), but anything
+    reported in RPM is a fan. Stopped fans are kept -- zero RPM is a real
+    reading and worth showing, not an absent sensor.
+    """
+    out = []
+    for path, sensor, value in rows:
+        if "rpm" not in value.lower():
+            continue
+        speed = parse_number(value)
+        if speed is None:
+            continue
+        name = sensor.strip() or "fan"
+        out.append({"name": name[:12], "rpm": round(speed)})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def parse_nvidia_smi(csv_line: str) -> dict:
@@ -238,6 +261,10 @@ class HardwareReader:
             gpu_temp = find_sensor(rows, GPU_TEMP_CANDIDATES, path_contains="Temperature")
             if gpu_temp is not None:
                 stats["gpu"]["temp"] = round(gpu_temp, 1)
+
+        fans = find_fans(rows)
+        if fans:
+            stats["fans"] = fans
 
         if stats["gpu"]["load"] is None:
             gpu_load = find_sensor(rows, GPU_LOAD_CANDIDATES, path_contains="Load")

@@ -26,7 +26,7 @@ from .media import MediaReader, NowPlaying, is_music
 
 log = logging.getLogger(__name__)
 
-MODES = ("lyrics", "cover", "stats", "clock")
+MODES = ("lyrics", "cover", "stats", "fans", "clock")
 
 
 def next_mode(current: str) -> str:
@@ -203,7 +203,16 @@ class DeskConsole:
             else "idle",
         }
 
+    def _fans_frame(self) -> dict:
+        return {
+            "t": "frame",
+            "mode": "fans",
+            "fans": self.stats.get("fans", [])[:3],
+        }
+
     def build_frame(self) -> dict:
+        if self.mode == "fans":
+            return self._fans_frame()
         if self.mode == "clock":
             return self._clock_frame()
         if self.mode == "stats":

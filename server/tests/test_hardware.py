@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from catsole.hardware import (
     HardwareReader,
+    find_fans,
     empty_stats,
     find_sensor,
     flatten_lhm,
@@ -112,7 +113,8 @@ def test_parse_nvidia_smi_keeps_readable_fields_when_one_is_unsupported():
 
 def test_empty_stats_has_all_sections_with_none_fields():
     stats = empty_stats()
-    assert set(stats) == {"cpu", "gpu", "ram"}
+    assert set(stats) == {"cpu", "gpu", "ram", "fans"}
+    assert stats["fans"] == []
     assert stats["cpu"]["temp"] is None
     assert stats["gpu"]["vram_used"] is None
     assert stats["ram"]["used"] is None
@@ -135,3 +137,46 @@ def test_ram_is_reported_in_megabytes():
     ram = HardwareReader().poll()["ram"]
     # Any real machine has between 1GB and 1TB of RAM.
     assert 1024 <= ram["total"] <= 1024 * 1024
+
+
+FAN_TREE = {
+    "Text": "Root",
+    "Children": [
+        {
+            "Text": "Motherboard",
+            "Children": [
+                {
+                    "Text": "Fans",
+                    "Children": [
+                        {"Text": "CPU Fan", "Value": "1240 RPM", "Children": []},
+                        {"Text": "Chassis Fan #2", "Value": "0 RPM", "Children": []},
+                        {"Text": "Voltage", "Value": "1.2 V", "Children": []},
+                    ],
+                }
+            ],
+        }
+    ],
+}
+
+
+def test_find_fans_matches_on_rpm_unit():
+    fans = find_fans(flatten_lhm(FAN_TREE))
+    names = [f["name"] for f in fans]
+    assert "CPU Fan" in names
+    # Matched by unit, so a voltage sitting in the same group is skipped.
+    assert "Voltage" not in names
+
+
+def test_find_fans_keeps_stopped_fans():
+    # Zero RPM is a real reading, not a missing sensor.
+    fans = find_fans(flatten_lhm(FAN_TREE))
+    stopped = [f for f in fans if f["rpm"] == 0]
+    assert stopped and stopped[0]["name"].startswith("Chassis")
+
+
+def test_find_fans_respects_the_limit():
+    assert len(find_fans(flatten_lhm(FAN_TREE), limit=1)) == 1
+
+
+def test_find_fans_on_empty_tree():
+    assert find_fans([]) == []

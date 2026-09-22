@@ -120,6 +120,9 @@ struct Frame {
   char timeText[8];  /* clock screen; the board has no RTC of its own */
   char secText[4];
   char dateText[20];
+  char fanName[3][14];
+  int16_t fanRpm[3];
+  uint8_t fanCount;
   uint32_t durMs;   /* track length, 0 when unknown */
 
   float cpuTemp, cpuLoad, cpuClock;
@@ -360,6 +363,14 @@ static void handleLine(const char *line) {
   copyField(frame.timeText, sizeof(frame.timeText), doc["time"] | "");
   copyField(frame.secText, sizeof(frame.secText), doc["sec"] | "");
   copyField(frame.dateText, sizeof(frame.dateText), doc["date"] | "");
+
+  frame.fanCount = 0;
+  for (JsonObject fan : doc["fans"].as<JsonArray>()) {
+    if (frame.fanCount >= 3) break;
+    copyField(frame.fanName[frame.fanCount], 14, fan["name"] | "fan");
+    frame.fanRpm[frame.fanCount] = fan["rpm"] | -1;
+    frame.fanCount++;
+  }
   frame.durMs = doc["dur"] | 0UL;
   frame.receivedAtMs = millis();
 
@@ -855,6 +866,62 @@ static void drawClock() {
           u8g2_font_4x6_tf, 7);
 }
 
+/* Fan screen.
+ *
+ * Blades are swept rather than straight -- each runs from the hub to a
+ * point rotated a little further round, which reads as a fan instead of a
+ * wheel of spokes. Spin rate follows the fastest fan, so the picture
+ * carries the same information as the number. With no data it turns over
+ * slowly rather than stopping, because a still fan looks broken. */
+static void drawFans() {
+  const int16_t cx = 28;
+  const int16_t cy = 38;
+  const int16_t r = 20;
+
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawUTF8(2, META_BASELINE, "fans");
+  u8g2.drawHLine(0, RULE_Y, SCREEN_W);
+
+  int16_t fastest = 0;
+  for (uint8_t i = 0; i < frame.fanCount; i++) {
+    if (frame.fanRpm[i] > fastest) fastest = frame.fanRpm[i];
+  }
+
+  static float angle = 0.0f;
+  angle += (fastest > 0) ? (0.02f + (fastest / 2200.0f) * 0.22f) : 0.012f;
+  if (angle > 6.2832f) angle -= 6.2832f;
+
+  u8g2.drawCircle(cx, cy, r, U8G2_DRAW_ALL);
+  u8g2.drawDisc(cx, cy, 3, U8G2_DRAW_ALL);
+  for (uint8_t i = 0; i < 5; i++) {
+    float a = angle + i * 1.2566f;  /* five blades, 72 degrees apart */
+    int16_t x1 = cx + (int16_t)(cos(a) * 5);
+    int16_t y1 = cy + (int16_t)(sin(a) * 5);
+    int16_t x2 = cx + (int16_t)(cos(a + 0.5f) * (r - 3));
+    int16_t y2 = cy + (int16_t)(sin(a + 0.5f) * (r - 3));
+    u8g2.drawLine(x1, y1, x2, y2);
+  }
+
+  if (frame.fanCount == 0) {
+    u8g2.setFont(u8g2_font_6x12_tf);
+    u8g2.drawUTF8(56, 32, "-- rpm");
+    u8g2.setFont(u8g2_font_4x6_tf);
+    u8g2.drawUTF8(56, 44, "no sensor source");
+    u8g2.drawUTF8(56, 52, "needs LHM running");
+  } else {
+    u8g2.setFont(u8g2_font_4x6_tf);
+    for (uint8_t i = 0; i < frame.fanCount; i++) {
+      char buf[28];
+      if (frame.fanRpm[i] < 0) {
+        snprintf(buf, sizeof(buf), "%s --", frame.fanName[i]);
+      } else {
+        snprintf(buf, sizeof(buf), "%s %d", frame.fanName[i], frame.fanRpm[i]);
+      }
+      u8g2.drawUTF8(56, 24 + i * 11, buf);
+    }
+  }
+}
+
 static void drawStats() {
   char value[40];
   char tempStr[12];
@@ -931,6 +998,7 @@ static void render() {
       if (strcmp(frame.mode, "stats") == 0) drawStats();
       else if (strcmp(frame.mode, "cover") == 0) drawCover();
       else if (strcmp(frame.mode, "clock") == 0) drawClock();
+      else if (strcmp(frame.mode, "fans") == 0) drawFans();
       else drawLyrics();
       break;
   }
