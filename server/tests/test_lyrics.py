@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from desk_console.lyrics import (
+from catsole.lyrics import (
     Lyrics,
     LyricsProvider,
     cache_key,

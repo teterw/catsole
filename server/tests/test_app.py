@@ -11,11 +11,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from desk_console.app import MODES, DeskConsole
-from desk_console.config import Config
-from desk_console.link import NullLink
-from desk_console.lyrics import Lyrics
-from desk_console.media import NowPlaying
+from catsole.app import MODES, DeskConsole
+from catsole.config import Config
+from catsole.link import NullLink
+from catsole.lyrics import Lyrics
+from catsole.media import NowPlaying
 
 
 class StubMedia:

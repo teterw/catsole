@@ -1,4 +1,4 @@
-"""desk-console entry point.
+"""catsole entry point.
 
     python run.py                  normal operation
     python run.py --no-serial      run the whole pipeline with no board
@@ -18,12 +18,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from desk_console.app import MODES, DeskConsole
-from desk_console.config import Config
-from desk_console.link import NullLink, SerialLink, find_port
+from catsole.app import MODES, DeskConsole
+from catsole.config import Config
+from catsole.link import NullLink, SerialLink, find_port
 
-LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "desk-console"
-LOG_FILE = LOG_DIR / "desk-console.log"
+LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "catsole"
+LOG_FILE = LOG_DIR / "catsole.log"
 
 
 def setup_logging(verbose: bool) -> None:
@@ -54,7 +54,7 @@ def setup_logging(verbose: bool) -> None:
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="desk-console PC-side service")
+    parser = argparse.ArgumentParser(description="catsole PC-side service")
     parser.add_argument("--port", help="serial port (default: autodetect by USB VID/PID)")
     parser.add_argument("--no-serial", action="store_true", help="run without a board")
     parser.add_argument("--no-web", action="store_true", help="skip the control panel")
@@ -87,7 +87,7 @@ def build_console(args) -> DeskConsole:
 def main(argv=None) -> int:
     args = parse_args(argv)
     setup_logging(args.verbose)
-    log = logging.getLogger("desk-console")
+    log = logging.getLogger("catsole")
 
     if not args.no_serial:
         detected = find_port(args.port)
@@ -104,7 +104,7 @@ def main(argv=None) -> int:
         return 0
 
     if not args.no_web:
-        from desk_console.web import serve
+        from catsole.web import serve
 
         threading.Thread(
             target=serve, args=(console,), name="web", daemon=True

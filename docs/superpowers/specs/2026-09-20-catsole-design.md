@@ -1,4 +1,4 @@
-# desk-console — Design
+# catsole — Design
 
 **Date:** 2026-09-20
 **Status:** Built and running. Amended 2026-09-21: the NFC reader was
@@ -159,7 +159,7 @@ A logon-triggered Scheduled Task running as the user, registered by
 `server/autostart.ps1` (`-Install` / `-Uninstall` / `-Status`), which the
 user runs themselves. It launches `pythonw.exe run.py` so no console
 window persists, with a ~20s post-logon delay so the CDC port and LHM are
-up first. Logs rotate into `%LOCALAPPDATA%\desk-console\`. LHM's own
+up first. Logs rotate into `%LOCALAPPDATA%\catsole\`. LHM's own
 elevated autostart is documented in the README as an optional step, not
 bundled.
 

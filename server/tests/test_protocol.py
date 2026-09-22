@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from desk_console.protocol import decode_line, encode_frame, fold_ascii
+from catsole.protocol import decode_line, encode_frame, fold_ascii
 
 
 def test_fold_ascii_strips_accents():

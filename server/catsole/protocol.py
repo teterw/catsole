@@ -1,4 +1,4 @@
-"""Newline-delimited JSON framing for the desk-console serial link.
+"""Newline-delimited JSON framing for the catsole serial link.
 
 The OLED's fonts carry Latin-1 at best, and the microcontroller has neither
 the RAM nor the glyph data to fold text itself, so every string bound for

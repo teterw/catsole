@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from desk_console.link import ARDUINO_PID, ARDUINO_VID, SerialLink, find_port
+from catsole.link import ARDUINO_PID, ARDUINO_VID, SerialLink, find_port
 
 
 class FakePort:

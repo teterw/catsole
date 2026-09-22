@@ -35,7 +35,7 @@ class Config:
 
     start_mode: str = "lyrics"
     cache_dir: Path = field(default_factory=lambda: DEFAULT_CACHE_DIR)
-    user_agent: str = "desk-console/1.0 (https://github.com/teterw/desk-console)"
+    user_agent: str = "catsole/1.0 (https://github.com/teterw/catsole)"
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

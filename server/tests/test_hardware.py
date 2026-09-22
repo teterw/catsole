@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from desk_console.hardware import (
+from catsole.hardware import (
     HardwareReader,
     empty_stats,
     find_sensor,

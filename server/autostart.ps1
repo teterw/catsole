@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Register desk-console to start at logon.
+    Register catsole to start at logon.
 
 .DESCRIPTION
     Creates a Scheduled Task that launches the service in your interactive
@@ -33,10 +33,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$TaskName = 'desk-console'
+$TaskName = 'catsole'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RunScript = Join-Path $ScriptDir 'run.py'
-$LogFile = Join-Path $env:LOCALAPPDATA 'desk-console\desk-console.log'
+$LogFile = Join-Path $env:LOCALAPPDATA 'catsole\catsole.log'
 
 function Get-PythonwPath {
     # Prefer the pythonw sitting beside whichever python is on PATH, so this
@@ -54,13 +54,13 @@ function Get-PythonwPath {
 function Show-Status {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if (-not $task) {
-        Write-Host "desk-console autostart: not installed"
+        Write-Host "catsole autostart: not installed"
         Write-Host "Install it with:  .\autostart.ps1 -Install"
         return
     }
 
     $info = Get-ScheduledTaskInfo -TaskName $TaskName
-    Write-Host "desk-console autostart: installed"
+    Write-Host "catsole autostart: installed"
     Write-Host "  State        : $($task.State)"
     Write-Host "  Last run     : $($info.LastRunTime)"
     Write-Host "  Last result  : $($info.LastTaskResult)"
@@ -102,9 +102,9 @@ function Install-Task {
 
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
         -Settings $settings -Principal $principal -Force `
-        -Description "Drives the desk-console OLED over USB serial." | Out-Null
+        -Description "Drives the catsole OLED over USB serial." | Out-Null
 
-    Write-Host "Installed. desk-console will start $DelaySeconds seconds after you log in."
+    Write-Host "Installed. catsole will start $DelaySeconds seconds after you log in."
     Write-Host "Start it now with:  Start-ScheduledTask -TaskName $TaskName"
     Write-Host "Logs:               $LogFile"
 }
@@ -112,11 +112,11 @@ function Install-Task {
 function Uninstall-Task {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if (-not $task) {
-        Write-Host "Nothing to remove: desk-console autostart is not installed."
+        Write-Host "Nothing to remove: catsole autostart is not installed."
         return
     }
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    Write-Host "Removed. desk-console will no longer start at logon."
+    Write-Host "Removed. catsole will no longer start at logon."
 }
 
 if ($Install) { Install-Task }

@@ -268,7 +268,7 @@ class DeskConsole:
     def run(self) -> None:
         self.link.start()
         self.audio.start()
-        log.info("desk-console running; mode=%s", self.mode)
+        log.info("catsole running; mode=%s", self.mode)
         try:
             while not self._stop.is_set():
                 self.tick()

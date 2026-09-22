@@ -1,5 +1,5 @@
 ﻿/*
- * desk-console firmware
+ * catsole firmware
  * Arduino UNO R4 WiFi + SSD1309 128x64 OLED (hardware SPI)
  *
  * This board is a renderer, not a decision-maker. It owns animation and
@@ -741,7 +741,7 @@ static void drawStats() {
 
 static void drawWaiting() {
   u8g2.setFont(u8g2_font_6x12_tf);
-  u8g2.drawUTF8(2, 26, "desk-console");
+  u8g2.drawUTF8(2, 26, "catsole");
   u8g2.setFont(u8g2_font_5x7_tf);
   u8g2.drawUTF8(2, 40, "waiting for the PC");
 

@@ -1,4 +1,4 @@
-# desk-console
+# catsole
 
 A USB-tethered desk display. An Arduino UNO R4 WiFi drives a 128×64 OLED, and
 a Python service on the PC feeds it either the current synced lyric line or
@@ -43,7 +43,7 @@ Two libraries, both from Library Manager:
 - **U8g2** (tested against 2.35.30)
 - **ArduinoJson** (tested against 7.4.2 — the v7 API, not v6)
 
-Open `arduino/desk_console/desk_console.ino` and upload, selecting **Arduino
+Open `arduino/catsole/catsole.ino` and upload, selecting **Arduino
 UNO R4 WiFi** as the board.
 
 ### SPI bus speed
@@ -201,7 +201,7 @@ the media transport controls are per-user-session, so a service would see no
 media session and lyrics mode would be permanently blank.
 
 Because `pythonw` has no console, logs go to
-`%LOCALAPPDATA%\desk-console\desk-console.log` (rotating, 4 files).
+`%LOCALAPPDATA%\catsole\catsole.log` (rotating, 4 files).
 
 ## Protocol
 
@@ -257,7 +257,7 @@ Stop it before flashing.
 ## Layout
 
 ```
-arduino/desk_console/   firmware
+arduino/catsole/   firmware
 arduino/oled_probe/     display diagnostic sketch
 server/                 PC service, tests, autostart script
 docs/superpowers/       design spec and implementation plan

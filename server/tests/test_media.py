@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from desk_console.media import NowPlaying, extrapolate_position
+from catsole.media import NowPlaying, extrapolate_position
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
