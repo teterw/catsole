@@ -168,6 +168,13 @@ static uint32_t lastEqMs = 0;
 static uint8_t beatPhase = 0;
 static uint32_t beatPhaseAtMs = 0;
 static uint16_t beatPeriodMs = 0;
+/* The bob runs off its own continuous phase rather than the reported
+   one. Messages land 20 times a second, and snapping onto each of them
+   jolted the cat mid-arc -- twenty small corrections a second, which is
+   what read as a stutter. This free-runs and is eased toward the
+   reported phase instead. */
+static float catPhase = 0.0f;
+static uint32_t catPhaseMs = 0;
 
 /* A lyric line that swaps instantly is jarring at this size, so the
    outgoing line is kept around long enough to slide it out while the new
@@ -750,32 +757,45 @@ static void drawLyrics() {
   bool liveEq = (millis() - lastEqMs) < EQ_FRESH_MS;
   float lift_f = 0.0f;
   if (playing && liveEq) {
-    /* Carry the phase forward between messages: they arrive 20 times a
-       second against 30 frames, so using them raw made the bob step. The
-       elapsed time is capped at one period, since a longer gap means the
-       spectrum stopped arriving and extrapolating further would only
-       accumulate error. */
-    float phase = beatPhase / 100.0f;
+    /* Advance the local phase on this frame's own elapsed time, then
+       ease it toward what the PC reports. Easing rather than snapping is
+       what keeps the arc continuous: the cat completes every rise and
+       fall instead of being yanked back part way through one. */
+    uint32_t nowMs = millis();
+    float dt = (float)(nowMs - catPhaseMs) / 1000.0f;
+    catPhaseMs = nowMs;
+    if (dt > 0.2f) dt = 0.2f;  /* a long gap means frames were missed */
+
     if (beatPeriodMs > 0) {
-      uint32_t since = millis() - beatPhaseAtMs;
-      if (since > beatPeriodMs) since = beatPeriodMs;
-      phase += (float)since / (float)beatPeriodMs;
-      while (phase >= 1.0f) phase -= 1.0f;
+      catPhase += dt * 1000.0f / (float)beatPeriodMs;
+      while (catPhase >= 1.0f) catPhase -= 1.0f;
+
+      /* Shortest way round to the reported phase, so a wrap does not send
+         it the long way about. */
+      float err = (beatPhase / 100.0f) - catPhase;
+      if (err > 0.5f) err -= 1.0f;
+      if (err < -0.5f) err += 1.0f;
+      catPhase += err * 0.07f;
+      if (catPhase < 0.0f) catPhase += 1.0f;
+      if (catPhase >= 1.0f) catPhase -= 1.0f;
     }
+
     /* Lowest on the beat, rising between: a head-bob dips on the beat
        rather than peaking on it, which is what made the old shape feel
        out of time even when the tempo was right. */
-    lift_f = sin(phase * 3.14159f);
+    lift_f = sin(catPhase * 3.14159f);
     if (lift_f < 0.0f) lift_f = 0.0f;
   }
-  int16_t lift = (int16_t)(lift_f * 5.0f);
+  /* Rounded, not truncated: truncation capped the peak a pixel short,
+     so the cat never reached the top of its own arc. */
+  int16_t lift = (int16_t)(lift_f * 8.0f + 0.5f);
 
   /* The idle screen already gives the mascot the stage, so the perched
      one is skipped there rather than putting two cats on one screen. */
   if (!idle) {
     u8g2.setDrawColor(0);
-    u8g2.drawBox(CAT_PERCH_X - 3, 43, SCREEN_W - CAT_PERCH_X + 3,
-                 SCREEN_H - 43);
+    u8g2.drawBox(CAT_PERCH_X - 3, 40, SCREEN_W - CAT_PERCH_X + 3,
+                 SCREEN_H - 40);
     u8g2.setDrawColor(1);
 
     /* Eyes widen on the landing, which reads as reacting to the beat. */
