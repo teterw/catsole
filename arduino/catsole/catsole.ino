@@ -116,6 +116,8 @@ struct Frame {
   uint8_t eq;
   uint32_t holdMs;
   uint32_t receivedAtMs;
+  uint32_t posMs;   /* track position when this frame was built */
+  uint32_t durMs;   /* track length, 0 when unknown */
 
   float cpuTemp, cpuLoad, cpuClock;
   float gpuTemp, gpuLoad, vramUsed, vramTotal;
@@ -307,6 +309,8 @@ static void handleLine(const char *line) {
   copyField(frame.mainText, sizeof(frame.mainText), incoming);
   frame.eq = doc["eq"] | 0;
   frame.holdMs = doc["hold_ms"] | 0UL;
+  frame.posMs = doc["pos"] | 0UL;
+  frame.durMs = doc["dur"] | 0UL;
   frame.receivedAtMs = millis();
 
   /* Absent sensors arrive as JSON null and must stay absent, not become 0. */
@@ -612,10 +616,29 @@ static void drawEqualizer(bool active) {
   }
 }
 
+/* Progress through the track, drawn just under the title.
+ *
+ * Frames arrive four times a second, which would make this step visibly.
+ * Playback advances in real time, so the position is carried forward
+ * locally between frames and corrected whenever a new one lands. */
+static void drawProgress() {
+  if (frame.durMs == 0) return;
+
+  uint32_t pos = frame.posMs;
+  if (strcmp(frame.state, "playing") == 0) {
+    pos += (millis() - frame.receivedAtMs);
+  }
+  if (pos > frame.durMs) pos = frame.durMs;
+
+  uint8_t w = (uint8_t)(((uint64_t)pos * (SCREEN_W - 4)) / frame.durMs);
+  if (w > 0) u8g2.drawBox(2, RULE_Y + 2, w, 2);
+}
+
 static void drawLyrics() {
   u8g2.setFont(u8g2_font_5x7_tf);
   drawMarquee(frame.meta, META_BASELINE, SCREEN_W - 4);
   u8g2.drawHLine(0, RULE_Y, SCREEN_W);
+  drawProgress();
 
   bool idle = strcmp(frame.state, "idle") == 0;
 
@@ -654,16 +677,6 @@ static void drawLyrics() {
     }
 
     if (strcmp(frame.lyr, "synced") == 0) {
-      /* Hairline showing how much of this line's window remains. When it
-         completes and nothing has replaced the line, the frame is late. */
-      if (frame.holdMs > 0) {
-        uint32_t elapsed = millis() - frame.receivedAtMs;
-        if (elapsed < frame.holdMs) {
-          uint8_t w = (uint8_t)(((frame.holdMs - elapsed) * (SCREEN_W - 4)) /
-                                frame.holdMs);
-          u8g2.drawHLine(2, RULE_Y + 2, w);
-        }
-      }
     } else if (wrapCount <= 2) {
       /* Only label the fallback when the title left room for it. */
       u8g2.setFont(u8g2_font_4x6_tf);

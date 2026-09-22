@@ -189,6 +189,8 @@ class DeskConsole:
                 "state": "idle",
                 "eq": 0,
                 "hold_ms": 0,
+                "pos": 0,
+                "dur": 0,
             }
 
         state = "playing" if playing.is_playing else "paused"
@@ -205,6 +207,8 @@ class DeskConsole:
                 "state": state,
                 "eq": 1 if playing.is_playing else 0,
                 "hold_ms": hold_ms,
+                "pos": playing.position_ms,
+                "dur": playing.duration_ms,
             }
 
         # No timing available: show the track itself as the headline rather
@@ -218,6 +222,8 @@ class DeskConsole:
             "state": state,
             "eq": 1 if playing.is_playing else 0,
             "hold_ms": 0,
+            "pos": playing.position_ms,
+            "dur": playing.duration_ms,
         }
 
     def push_frame(self) -> None:
