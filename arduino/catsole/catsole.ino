@@ -747,9 +747,11 @@ static void drawLyrics() {
       phase += (float)(millis() - beatPhaseAtMs) / (float)beatPeriodMs;
       phase -= (int)phase;
     }
-    float env = 1.0f - (phase * 2.6f);
-    if (env < 0.0f) env = 0.0f;
-    lift_f = env * env;
+    /* Lowest on the beat, rising between: a head-bob dips on the beat
+       rather than peaking on it, which is what made the old shape feel
+       out of time even when the tempo was right. */
+    lift_f = sin(phase * 3.14159f);
+    if (lift_f < 0.0f) lift_f = 0.0f;
   }
   int16_t lift = (int16_t)(lift_f * 5.0f);
   float hop = lift_f;
@@ -763,7 +765,9 @@ static void drawLyrics() {
     u8g2.setDrawColor(1);
 
     /* Eyes widen on the landing, which reads as reacting to the beat. */
-    uint8_t pose = (hop > 0.5f) ? CAT_HAPPY : catPose(playing, false);
+    uint8_t pose = (playing && liveEq && hop < 0.25f)
+                       ? CAT_HAPPY
+                       : catPose(playing, false);
     drawCat(CAT_PERCH_X, 55 - lift, pose, u8g2_font_4x6_tf, 7);
   }
 }

@@ -298,13 +298,17 @@ class DeskConsole:
             if playing and self.audio.available:
                 # Phase rides with the spectrum: the device bobs on the
                 # tracked beat grid rather than on raw bass spikes.
+                bpm = self.audio.bpm
+                period_ms = 60000.0 / bpm if bpm > 0 else 0.0
+                phase = self.audio.beat_phase
+                if period_ms > 0:
+                    # Run the phase ahead to cancel the pipeline's own lag.
+                    phase = (phase + self.config.beat_lead_ms / period_ms) % 1.0
                 self.link.send({
                     "t": "eq",
                     "b": self.audio.hex_levels(),
-                    "p": int(self.audio.beat_phase * 100),
-                    "ms": int(60000 / self.audio.bpm)
-                    if self.audio.bpm > 0
-                    else 0,
+                    "p": int(phase * 100),
+                    "ms": int(period_ms),
                 })
             self._next_eq = now + self.config.eq_interval_s
 
@@ -398,6 +402,7 @@ class DeskConsole:
             "audio": {
                 "available": self.audio.available,
                 "device": self.audio.device_name,
+                "bpm": round(self.audio.bpm, 1),
                 "levels": self.audio.levels(),
                 "error": self.audio.last_error,
             },

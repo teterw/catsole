@@ -29,6 +29,12 @@ class Config:
     # 20Hz: fast enough that the bars track transients.
     eq_interval_s: float = 0.05
 
+    # The spectrum reaches us already late: a 1024-sample buffer at
+    # 48kHz is 21ms before analysis even starts, then transit and a
+    # frame of render on top. The beat phase is advanced by this much
+    # so the bob lands with what you hear rather than after it.
+    beat_lead_ms: float = 70.0
+
     # With nothing playing the device cycles screens on its own.
     # Zero disables it.
     idle_rotate_s: float = 9.0
