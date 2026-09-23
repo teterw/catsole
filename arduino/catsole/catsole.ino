@@ -20,6 +20,8 @@
 #include <SPI.h>
 #include <U8g2lib.h>
 #include <ArduinoJson.h>
+#include <Arduino_LED_Matrix.h>
+#include <RTC.h>
 
 #define FIRMWARE_VERSION "1.0.0"
 
@@ -93,6 +95,42 @@ static const uint8_t CAT_PERCH_X = 96;
 /* Stats bars stop short of the mascot's column. */
 static const uint8_t STAT_BAR_W = 100;
 
+/* ==================================================================== *
+ * onboard LED matrix
+ *
+ * The R4 WiFi carries a 12x8 matrix that nothing else uses. It holds the
+ * mascot's face, blinking in step with the one on the panel: at twelve
+ * pixels across there is room for ears, eyes and a muzzle and nothing
+ * else, so the design is filled rather than outlined -- outlines at this
+ * size read as noise.
+ * ==================================================================== */
+ArduinoLEDMatrix matrix;
+
+static const uint8_t FACE_OPEN[96] = {
+    1,0,0,0,0,0,0,0,0,0,0,1,
+    1,1,0,0,0,0,0,0,0,0,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,0,1,1,1,1,1,1,0,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,0,0,1,1,1,1,1,
+    0,1,1,1,1,1,1,1,1,1,1,0,
+    0,0,1,1,1,1,1,1,1,1,0,0,
+};
+
+static const uint8_t FACE_SHUT[96] = {
+    1,0,0,0,0,0,0,0,0,0,0,1,
+    1,1,0,0,0,0,0,0,0,0,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,0,0,1,1,1,1,1,
+    0,1,1,1,1,1,1,1,1,1,1,0,
+    0,0,1,1,1,1,1,1,1,1,0,0,
+};
+
+/* Pushing a frame costs a little, so only do it when the face changes. */
+static bool matrixShut = true;
+
 /* ---- link state ---------------------------------------------------- */
 enum LinkState { LINK_BOOT, LINK_WAITING, LINK_LIVE, LINK_STALE };
 
@@ -101,6 +139,22 @@ static uint32_t lastFrameMs = 0;
 static uint32_t lastHelloMs = 0;
 static bool everReceived = false;
 static bool displayAsleep = false;
+
+/* ==================================================================== *
+ * onboard clock
+ *
+ * The RA4M1 has a real-time clock, so once the PC has set it the board
+ * knows the time on its own. That matters here because the USB port keeps
+ * power when the PC shuts down -- the board runs all night either way, so
+ * it may as well be a clock rather than a dark panel.
+ * ==================================================================== */
+static bool rtcReady = false;
+
+/* Overnight the panel is dimmed and the digits are walked around the
+   screen, so no pixel is lit for hours on end. Same reason televisions
+   do it. */
+static const uint8_t NIGHT_CONTRAST = 24;
+static bool nightMode = false;
 
 /* Frame timing, so headroom questions can be answered with numbers rather
    than estimates. Reported by the "perf" command, which also resets. */
@@ -214,6 +268,12 @@ static bool rxOverflow = false;
  * helpers
  * ==================================================================== */
 
+static void updateMatrix(bool shut) {
+  if (shut == matrixShut) return;
+  matrixShut = shut;
+  matrix.loadPixels((uint8_t *)(shut ? FACE_SHUT : FACE_OPEN), 96);
+}
+
 static void resetFrame() {
   memset(&frame, 0, sizeof(frame));
   strcpy(frame.mode, "lyrics");
@@ -256,6 +316,8 @@ static void sendHello() {
   Serial.print(F(FIRMWARE_VERSION));
   Serial.print(F("\",\"variant\":"));
   Serial.print(DISPLAY_VARIANT);
+  Serial.print(F(",\"rtc\":"));
+  Serial.print(rtcReady ? F("true") : F("false"));
   Serial.println(F("}"));
 }
 
@@ -281,6 +343,18 @@ static void handleLine(const char *line) {
   const char *type = doc["t"] | "";
 
   if (strcmp(type, "ping") == 0) {
+    lastFrameMs = millis();
+    everReceived = true;
+    return;
+  }
+
+  if (strcmp(type, "rtc") == 0) {
+    /* The PC owns the wall clock; the board just keeps counting once it
+       has been told. Resent periodically so drift cannot accumulate. */
+    RTCTime set(doc["d"] | 1, (Month)((int)(doc["mo"] | 1) - 1),
+                doc["y"] | 2026, doc["h"] | 0, doc["mi"] | 0, doc["s"] | 0,
+                (DayOfWeek)((int)(doc["dow"] | 0)), SaveLight::SAVING_TIME_INACTIVE);
+    if (RTC.setTime(set)) rtcReady = true;
     lastFrameMs = millis();
     everReceived = true;
     return;
@@ -319,6 +393,10 @@ static void handleLine(const char *line) {
     Serial.print(perfFrames ? perfRenderSum / perfFrames : 0);
     Serial.print(F(",\"send_us\":"));
     Serial.print(perfFrames ? perfSendSum / perfFrames : 0);
+    Serial.print(F(",\"rtc\":"));
+    Serial.print(rtcReady ? F("true") : F("false"));
+    Serial.print(F(",\"night\":"));
+    Serial.print(nightMode ? F("true") : F("false"));
     Serial.println(F("}"));
     perfRenderSum = perfSendSum = perfFrames = 0;
     perfSince = millis();
@@ -979,6 +1057,30 @@ static void drawStats() {
   drawHalfFan(fastest);
 }
 
+/* Overnight face: just the time, dimmed, walking slowly around the panel.
+ *
+ * The board stays powered when the PC shuts down, so this is the
+ * difference between a dark panel and a working desk clock. Nothing is
+ * static: the digits step to a new position every minute, which is what
+ * keeps eight hours of the same glyphs from etching into the display. */
+static void drawNightClock() {
+  RTCTime now;
+  if (!RTC.getTime(now)) return;
+
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%02d:%02d", now.getHour(), now.getMinutes());
+
+  uint8_t m = now.getMinutes();
+  int16_t ox = (int16_t)((m % 7) * 4) - 12;
+  int16_t oy = (int16_t)(((m / 7) % 5) * 3) - 6;
+
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_logisoso24_tn);
+  uint16_t w = u8g2.getUTF8Width(buf);
+  u8g2.drawUTF8((SCREEN_W - w) / 2 + ox, 42 + oy, buf);
+  u8g2.sendBuffer();
+}
+
 static void drawWaiting() {
   u8g2.setFont(u8g2_font_6x12_tf);
   u8g2.drawUTF8(2, 26, "catsole");
@@ -1133,6 +1235,10 @@ void setup() {
   }
 
   /* Must be set before begin(), which is when the init sequence is sent. */
+  matrix.begin();
+  RTC.begin();
+  rtcReady = RTC.isRunning();
+
   u8g2.setBusClock(DISPLAY_BUS_HZ);
   u8g2.begin();
   u8g2.setFontMode(1);
@@ -1166,10 +1272,34 @@ void loop() {
     linkState = LINK_LIVE;
   }
 
-  /* Blank the panel once the PC has been gone a while, and bring it back
-     the moment anything arrives. Driven by time since the last frame, so
-     it covers both a PC that went away and one that never showed up. */
-  bool shouldSleep = (now - lastFrameMs) > SLEEP_AFTER_MS;
+  /* With a clock set, a PC that has gone away leaves a desk clock rather
+     than a dark panel. The board is powered either way. */
+  bool quiet = (now - lastFrameMs) > SLEEP_AFTER_MS;
+
+  if (quiet && rtcReady) {
+    if (!nightMode) {
+      nightMode = true;
+      displayAsleep = false;
+      u8g2.setPowerSave(0);
+      u8g2.setContrast(NIGHT_CONTRAST);
+      sendSleepState(false);
+      lastDrawMs = 0;
+    }
+    /* Once a second is plenty for a clock showing minutes, and it leaves
+       the panel idle the rest of the time. */
+    if (now - lastDrawMs >= 1000) {
+      drawNightClock();
+      lastDrawMs = now;
+    }
+    return;
+  }
+
+  if (nightMode) {
+    nightMode = false;
+    u8g2.setContrast(255);
+  }
+
+  bool shouldSleep = quiet;
   if (shouldSleep != displayAsleep) {
     displayAsleep = shouldSleep;
     u8g2.setPowerSave(displayAsleep ? 1 : 0);
@@ -1179,6 +1309,13 @@ void loop() {
 
   /* Nothing below here matters while the panel is off. */
   if (displayAsleep) return;
+
+  /* The matrix face blinks in step with the one on the panel. */
+  {
+    bool playing = strcmp(frame.state, "playing") == 0;
+    uint8_t pose = catPose(playing, displayAsleep);
+    updateMatrix(pose == CAT_BLINK || pose == CAT_SLEEP);
+  }
 
   if (now - lastMarqueeMs >= 40) {
     marqueeOffset++;

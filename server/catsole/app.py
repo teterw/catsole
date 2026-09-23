@@ -76,6 +76,7 @@ class DeskConsole:
         self._manual_until = 0.0
         self._was_playing = False
         self._busy = False
+        self._next_rtc = 0.0
 
         self._track_key = None
         self._fetching = False
@@ -98,6 +99,8 @@ class DeskConsole:
             return
 
         self.device_firmware = str(event.get("fw", ""))
+        # A board that just booted has no clock until we give it one.
+        self._next_rtc = 0.0
         log.info("device announced firmware %s", self.device_firmware)
         # Answer immediately so the display leaves its waiting state.
         self.push_frame()
@@ -186,6 +189,29 @@ class DeskConsole:
             worker()
 
     # ---- frame building --------------------------------------------------
+
+    def _send_rtc(self) -> None:
+        """Hand the board the wall clock.
+
+        Once set it keeps counting on its own, which is what lets it show
+        the time after the PC has gone. Resent periodically so its drift
+        never accumulates, and after every reconnect since a reset loses
+        it.
+        """
+        now = datetime.now()
+        self.link.send(
+            {
+                "t": "rtc",
+                "y": now.year,
+                "mo": now.month,
+                "d": now.day,
+                "h": now.hour,
+                "mi": now.minute,
+                "s": now.second,
+                # RTCTime counts weekdays from Sunday; Python from Monday.
+                "dow": (now.weekday() + 1) % 7,
+            }
+        )
 
     def _clock_frame(self) -> dict:
         now = datetime.now()
@@ -314,6 +340,10 @@ class DeskConsole:
                 reader.latest() if hasattr(reader, "latest") else reader.poll()
             )
             self._next_stats = now + self.config.stats_poll_s
+
+        if now >= self._next_rtc:
+            self._send_rtc()
+            self._next_rtc = now + self.config.rtc_sync_s
 
         # Spectrum goes out far more often than full frames. A meter that
         # lags the music reads as broken, and the payload is tiny.

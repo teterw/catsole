@@ -29,6 +29,10 @@ class Config:
     # 20Hz: fast enough that the bars track transients.
     eq_interval_s: float = 0.05
 
+    # How often the board's own clock is corrected. It keeps time by
+    # itself; this only stops drift accumulating.
+    rtc_sync_s: float = 600.0
+
     # The spectrum reaches us already late: a 1024-sample buffer at
     # 48kHz is 21ms before analysis even starts, then transit and a
     # frame of render on top. The beat phase is advanced by this much
