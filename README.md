@@ -213,8 +213,9 @@ land mid-word now and then, but it never tears a character apart.
 
 Thai needs 17px a line even at 14px, since marks stack above and below, so
 the band holds two lines. A longer line pages through two rows at a time,
-splitting the line's own duration (`hold_ms`) between the pages so they keep
-pace with the singing. Title cards have no duration and cycle instead.
+splitting the line's own duration (`hold_ms`) between the pages. The split is
+even, which only roughly keeps pace with the singing - see
+[Known issues](#known-issues). Title cards have no duration and cycle instead.
 
 Only the main line gets Thai. The artist and title strip along the top is
 7px tall, too short for any Thai face, so Thai there is dropped as it always
@@ -331,6 +332,28 @@ is what a paged Thai line divides between its pages. Device-bound text is
 folded to ASCII on the PC, because the OLED fonts do not carry the full
 Unicode range. The exception is Thai in `main`, which goes as raw UTF-8
 rather than `\u` escapes: three bytes a character on the wire, not six.
+
+## Known issues
+
+Things that work but are not right yet.
+
+**Thai lyric timing is off.** A Thai line too long for two rows pages through
+it, and the pages currently split the line's `hold_ms` evenly. Syllables are
+not spread evenly through a sung line, so the second page tends to arrive late
+and linger. It needs weighting by page length at least, and the ETL faces cost
+enough draw time per frame that some of the drift may be render lag rather
+than the split.
+
+**Words still get cut.** Thai wrapping has no dictionary, so it breaks at the
+places that are certainly safe (before the leading vowels, after the trailing
+ones) and guesses in between. A guess lands mid-word often enough to notice.
+The Latin path can clip the last glyph on a line too, since the width estimate
+and the clip window are computed separately.
+
+**Animation needs another pass.** The lyric slide does not run between pages of
+the same Thai line, only between lines, so a paged line changes in a jump. The
+cat's bob also drifts for a bar or two after a tempo change before the grid
+settles again.
 
 ## Troubleshooting
 
