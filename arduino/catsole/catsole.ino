@@ -542,7 +542,12 @@ static uint16_t textWidth(const char *s) {
   uint16_t w = 0;
   while (*s) {
     uint16_t c = nextCodepoint(s);
-    if (!isThaiMark(c)) w += u8g2.getGlyphWidth(c);
+    /* The C++ wrapper in U8g2 2.35.30 has no getGlyphWidth, but the
+       C function behind it does, and the handle is public. */
+    if (!isThaiMark(c)) {
+      int8_t gw = u8g2_GetGlyphWidth(u8g2.getU8g2(), c);
+      if (gw > 0) w += (uint16_t)gw;
+    }
   }
   return w;
 }
