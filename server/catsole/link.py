@@ -198,5 +198,5 @@ class NullLink:
     def send(self, obj: dict) -> bool:
         self.frames.append(obj)
         if self.echo:
-            print(encode_frame(obj).decode("ascii", "ignore").rstrip())
+            print(encode_frame(obj).decode("utf-8", "replace").rstrip())
         return True

@@ -127,6 +127,43 @@ def test_lyrics_frame_shows_current_synced_line(console):
     assert frame["lyr"] == "synced"
 
 
+def test_synced_frame_carries_how_long_the_line_holds(console):
+    console.mode = "lyrics"
+    console.now_playing = NowPlaying(
+        artist="An Artist", title="A Title", duration_ms=200_000,
+        position_ms=2_000, is_playing=True,
+    )
+    console.lyrics = Lyrics(
+        kind="synced",
+        synced=[(1000, "placeholder line one"), (4500, "placeholder line two")],
+    )
+    assert console.build_frame()["hold_ms"] == 2500
+
+
+def test_thai_line_is_shown_not_replaced_by_title_card(console):
+    console.mode = "lyrics"
+    console.now_playing = NowPlaying(
+        artist="An Artist", title="A Title", duration_ms=200_000,
+        position_ms=5_000, is_playing=True,
+    )
+    console.lyrics = Lyrics(kind="synced", synced=[(1000, "ทดสอบ ข้อความ")])
+    frame = console.build_frame()
+    assert frame["main"] == "ทดสอบ ข้อความ"
+    assert frame["lyr"] == "synced"
+
+
+def test_line_in_a_script_with_no_font_falls_back_to_title_card(console):
+    console.mode = "lyrics"
+    console.now_playing = NowPlaying(
+        artist="An Artist", title="A Title", duration_ms=200_000,
+        position_ms=5_000, is_playing=True,
+    )
+    console.lyrics = Lyrics(kind="synced", synced=[(1000, "你好")])
+    frame = console.build_frame()
+    assert frame["main"] == "A Title"
+    assert frame["lyr"] == "script"
+
+
 def test_lyric_offset_shifts_line_selection(console):
     console.config.lyric_offset_ms = -4000
     console.mode = "lyrics"
