@@ -130,6 +130,9 @@ Long lines wrap and step down through three font sizes rather than being cut
 off, and a new line slides in as the old one slides out. The mascot perches
 at the right, bobbing on the beat.
 
+Thai lyrics are shown in Thai, not swapped for the title card. See
+[Thai lyrics](#thai-lyrics) below.
+
 **Stats** — CPU clock, temperature and load; GPU temperature, load and VRAM;
 and system RAM, as three rows with usage bars. Fan speed sits in the header
 with half a fan disc spinning in from the right edge, its rate following the
@@ -188,6 +191,35 @@ onset does not stall the animation — it keeps moving on the grid and
 resynchronises when the next one lands. The phase is advanced by
 `beat_lead_ms` to cancel the pipeline's own latency: a 1024-sample buffer at
 48kHz is 21ms before analysis even starts.
+
+### Thai lyrics
+
+The firmware carries U8g2's ETL Thai faces (16px and 14px) for the lyric
+band. A line with any Thai in it gets these; a line without keeps the Latin
+faces, so English songs look exactly as before. Mixed lines are fine, since
+the Thai faces include ASCII.
+
+The ETL faces are typewriter fonts: vowels and tone marks each have a full
+cell's width and are drawn to land on the letter before them. The firmware
+draws each mark at the previous letter's position without advancing, as a
+Thai typewriter would have, so marks stack on their letters rather than
+sitting in cells of their own.
+
+Thai puts no spaces between words, so wrapping cannot wait for one. A phrase
+that does not fit is split inside itself, preferring a place that is
+certainly a syllable edge: before เ แ โ ใ ไ, or after ะ า ำ ๆ. A break never
+separates a letter from its marks. Without a dictionary a break can still
+land mid-word now and then, but it never tears a character apart.
+
+Thai needs 17px a line even at 14px, since marks stack above and below, so
+the band holds two lines. A longer line pages through two rows at a time,
+splitting the line's own duration (`hold_ms`) between the pages so they keep
+pace with the singing. Title cards have no duration and cycle instead.
+
+Only the main line gets Thai. The artist and title strip along the top is
+7px tall, too short for any Thai face, so Thai there is dropped as it always
+was. A Thai song with no synced lyrics still shows its Thai title, though,
+because the title card puts the title in the main band.
 
 ### Idling
 
@@ -294,10 +326,11 @@ answers:
 {"t":"hello","fw":"1.0.0","variant":0}
 ```
 
-`hold_ms` tells the device how long the current lyric line stays valid, so it
-can draw a progress hairline and show when a frame is late instead of sitting
-on a stale line. All device-bound text is folded to ASCII on the PC, because
-the OLED fonts do not carry the full Unicode range.
+`hold_ms` tells the device how long the current lyric line stays up, which
+is what a paged Thai line divides between its pages. Device-bound text is
+folded to ASCII on the PC, because the OLED fonts do not carry the full
+Unicode range. The exception is Thai in `main`, which goes as raw UTF-8
+rather than `\u` escapes: three bytes a character on the wire, not six.
 
 ## Troubleshooting
 
@@ -310,7 +343,9 @@ bus is running faster than the wiring can carry. Lower `DISPLAY_BUS_HZ`.
 
 **Lyrics mode shows the title instead of lyrics.** No synced lyrics exist for
 that track on lrclib, or the track's reported duration is too far from any
-match. The control panel shows which of those it is.
+match. The control panel shows which of those it is. A line in a script the
+display has no font for (Chinese, Japanese, Korean and so on) also falls back
+to the title card. Thai is the exception, and is drawn as is.
 
 **Lyrics run early or late.** Set `lyric_offset_ms` in `server/config.json`,
 or pass `--offset-ms`. Positive pushes later. Different players report

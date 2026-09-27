@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from catsole.protocol import decode_line, encode_frame, fold_ascii
+from catsole.protocol import decode_line, encode_frame, fold_ascii, fold_text
 
 
 def test_fold_ascii_strips_accents():
@@ -32,6 +32,34 @@ def test_fold_ascii_collapses_whitespace_left_behind():
 
 def test_fold_ascii_handles_empty():
     assert fold_ascii("") == ""
+
+
+def test_fold_text_keeps_thai_intact():
+    # Sara am must not be decomposed into nikhahit plus sara aa.
+    assert fold_text("น้ำตา") == "น้ำตา"
+    assert fold_text("ที่รัก") == "ที่รัก"
+
+
+def test_fold_text_folds_everything_around_thai():
+    assert fold_text("Café ที่รัก — 你好") == "Cafe ที่รัก -"
+
+
+def test_fold_text_matches_fold_ascii_without_thai():
+    for text in ("Beyoncé", "don’t — stop", "hello 你好", ""):
+        assert fold_text(text) == fold_ascii(text)
+
+
+def test_encode_frame_sends_thai_main_as_utf8():
+    out = encode_frame({"t": "frame", "main": "รักเธอ"})
+    assert "รักเธอ".encode("utf-8") in out
+    assert decode_line(out.decode("utf-8"))["main"] == "รักเธอ"
+
+
+def test_encode_frame_keeps_thai_out_of_other_fields():
+    # The meta strip has no Thai face, so Thai there is dropped as before.
+    out = encode_frame({"t": "frame", "meta": "Artist - รักเธอ"})
+    assert out.decode("ascii")  # still pure ASCII
+    assert decode_line(out.decode())["meta"] == "Artist -"
 
 
 def test_encode_frame_folds_and_terminates():

@@ -22,7 +22,7 @@ from .hardware import HardwareReader, empty_stats
 from .link import NullLink, SerialLink
 from .lyrics import Lyrics, LyricsProvider, select_line
 from .media import MediaReader, NowPlaying, is_music
-from .protocol import fold_ascii
+from .protocol import fold_text
 
 log = logging.getLogger(__name__)
 
@@ -280,13 +280,14 @@ class DeskConsole:
 
         if self.lyrics.is_synced:
             position = playing.position_ms + self.config.lyric_offset_ms
-            line, _hold_ms = select_line(self.lyrics.synced, position)
+            line, hold_ms = select_line(self.lyrics.synced, position)
 
-            # The panel's fonts are Latin-only, so a line in Thai, Chinese,
+            # The panel has Latin and Thai faces only, so a line in Chinese,
             # Japanese or Korean reduces to nothing and would arrive as an
             # empty band. Accented Latin is fine -- it folds to its base
-            # letters -- so this only catches scripts with no glyphs at all.
-            if line and not fold_ascii(line):
+            # letters -- and Thai is drawn as is, so this only catches
+            # scripts with no glyphs at all.
+            if line and not fold_text(line):
                 return self._title_card(playing, state, "script")
 
             return {
@@ -294,6 +295,9 @@ class DeskConsole:
                 "mode": "lyrics",
                 "meta": playing.label,
                 "main": line,
+                # How long the line stays up, so a long Thai line can page
+                # through its rows in step with the singing.
+                "hold_ms": hold_ms,
                 "lyr": "synced",
                 "state": state,
                 "eq": 1 if playing.is_playing else 0,

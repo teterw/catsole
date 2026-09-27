@@ -11,6 +11,7 @@
  *
  * Protocol (newline-delimited JSON):
  *   in   {"t":"frame","mode":"lyrics","meta":"...","main":"...","hold_ms":3200,"eq":1,"state":"playing","lyr":"synced"}
+ *        (every string is ASCII except "main", which may carry Thai as UTF-8)
  *        {"t":"frame","mode":"stats","cpu":{...},"gpu":{...}}
  *        {"t":"ping"}
  *   out  {"t":"hello","fw":"1.0.0","variant":0}
@@ -142,7 +143,10 @@ static uint8_t mcuLoad = 0;
 struct Frame {
   char mode[8];
   char meta[72];
-  char mainText[104];
+  /* Room for a long Thai line: each Thai character is three bytes of
+     UTF-8, and its vowels and tone marks are characters of their own. */
+  char mainText[224];
+  uint32_t holdMs;  /* how long the main line stays up, 0 when open-ended */
   char lyr[8];
   char state[10];
   uint8_t eq;
@@ -197,14 +201,17 @@ static uint32_t catPhaseMs = 0;
    one slides in beneath it. */
 static const uint16_t TRANSITION_MS = 260;
 static uint32_t transitionStartMs = 0;
+/* When the current layout's line arrived, which is what its pages count
+   from. Kept apart from transitionStartMs, which moves on first. */
+static uint32_t wrapShownMs = 0;
 
 /* Set when the main line changes; the layout is rebuilt on the next draw
    rather than inside the serial handler, which keeps the text-layout types
    out of the parser's scope. */
 static bool wrapDirty = true;
 
-#define MAX_WRAP_LINES 4
-#define MAX_WRAP_CHARS 48
+#define MAX_WRAP_LINES 6
+#define MAX_WRAP_CHARS 80
 
 /* A finished layout: which lines, at which size.
  *
@@ -217,13 +224,17 @@ struct WrappedText {
   char lines[MAX_WRAP_LINES][MAX_WRAP_CHARS];
   uint8_t count;
   uint8_t styleIndex;
+  uint32_t holdMs;
 };
 
 static WrappedText wrapCurrent;
 static WrappedText wrapPrev;
+/* The page the outgoing line was on when it was replaced, so it slides
+   out from where it was rather than jumping back to its first page. */
+static uint8_t wrapPrevPage = 0;
 
 /* ---- serial receive -------------------------------------------------- */
-static char rxBuf[640];
+static char rxBuf[896];
 static uint16_t rxLen = 0;
 static bool rxOverflow = false;
 
@@ -248,6 +259,13 @@ static void copyField(char *dest, size_t size, const char *src) {
   }
   strncpy(dest, src, size - 1);
   dest[size - 1] = 0;
+  /* A cut through the middle of a multi-byte character would leave a
+     broken sequence at the end, so back off to the character's start. */
+  size_t len = strlen(dest);
+  if (len == size - 1 && ((uint8_t)src[len] & 0xC0) == 0x80) {
+    while (len > 0 && ((uint8_t)dest[len] & 0xC0) == 0x80) len--;
+    dest[len] = 0;
+  }
 }
 
 /* Try to bring the reader up. Called at boot and retried while it is
@@ -374,6 +392,8 @@ static void handleLine(const char *line) {
   if (strcmp(incoming, frame.mainText) != 0) {
     transitionStartMs = millis();
     wrapDirty = true;
+    /* Read once, on the line's first frame, when it is the whole span. */
+    frame.holdMs = doc["hold_ms"] | 0UL;
   }
   copyField(frame.mainText, sizeof(frame.mainText), incoming);
   frame.eq = doc["eq"] | 0;
@@ -467,6 +487,148 @@ static void drawMarquee(const char *text, uint8_t baseline, uint8_t boxW) {
   u8g2.setMaxClipWindow();
 }
 
+/* ---- Thai ----------------------------------------------------------
+ *
+ * The ETL Thai faces are typewriter fonts: every glyph, vowel and tone
+ * mark alike, has a full cell's advance, and the marks are drawn to land
+ * on the letter before them when struck in the same cell. So marks are
+ * drawn at the previous letter's position without advancing, which is how
+ * a Thai typewriter composed them too. U8g2's own string routines advance
+ * after every glyph, so Thai text goes through the helpers below instead.
+ * Text with no Thai in it still takes U8g2's own path, unchanged.
+ */
+
+/* Decode one UTF-8 character and step past it. A malformed byte is
+   passed through as itself, so bad input costs one glyph, not the line. */
+static uint16_t nextCodepoint(const char *&p) {
+  const uint8_t *s = (const uint8_t *)p;
+  if (s[0] < 0x80) {
+    p += 1;
+    return s[0];
+  }
+  if ((s[0] & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
+    p += 2;
+    return (uint16_t)(((s[0] & 0x1F) << 6) | (s[1] & 0x3F));
+  }
+  if ((s[0] & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 &&
+      (s[2] & 0xC0) == 0x80) {
+    p += 3;
+    return (uint16_t)(((s[0] & 0x0F) << 12) | ((s[1] & 0x3F) << 6) |
+                      (s[2] & 0x3F));
+  }
+  p += 1;
+  return s[0];
+}
+
+/* Vowels above and below the letter, and the tone marks. */
+static bool isThaiMark(uint16_t c) {
+  return c == 0x0E31 || (c >= 0x0E34 && c <= 0x0E3A) ||
+         (c >= 0x0E47 && c <= 0x0E4E);
+}
+
+/* Thai is U+0E00..U+0E7F, which UTF-8 encodes as E0 B8 xx or E0 B9 xx. */
+static bool hasThai(const char *s, uint16_t len = 0xFFFF) {
+  for (uint16_t i = 0; i + 1 < len && s[i] && s[i + 1]; i++) {
+    if ((uint8_t)s[i] == 0xE0 &&
+        ((uint8_t)s[i + 1] == 0xB8 || (uint8_t)s[i + 1] == 0xB9)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static uint16_t textWidth(const char *s) {
+  if (!hasThai(s)) return u8g2.getUTF8Width(s);
+  uint16_t w = 0;
+  while (*s) {
+    uint16_t c = nextCodepoint(s);
+    if (!isThaiMark(c)) w += u8g2.getGlyphWidth(c);
+  }
+  return w;
+}
+
+static void drawText(int16_t x, int16_t y, const char *s) {
+  if (!hasThai(s)) {
+    u8g2.drawUTF8(x, y, s);
+    return;
+  }
+  int16_t pen = x;
+  int16_t cell = x;
+  while (*s) {
+    uint16_t c = nextCodepoint(s);
+    if (isThaiMark(c)) {
+      u8g2.drawGlyph(cell, y, c);
+    } else {
+      cell = pen;
+      pen += u8g2.drawGlyph(pen, y, c);
+    }
+  }
+}
+
+/* Whether a line may end just before byte i of a word.
+ *
+ * Thai writes a phrase without spaces, so a phrase wider than the panel
+ * has to be split inside itself. Without a dictionary the syllables are
+ * unknown, but the worst breaks are cheap to rule out: never between a
+ * letter and its marks, never after a vowel that is written before its
+ * letter, and never before a vowel that trails one. */
+static bool canBreakBefore(const char *word, uint16_t i) {
+  if (i == 0) return false;
+  if (((uint8_t)word[i] & 0xC0) == 0x80) return false;  /* mid-character */
+
+  const char *here = word + i;
+  uint16_t next = nextCodepoint(here);
+  if (isThaiMark(next)) return false;
+  if (next == 0x0E30 || next == 0x0E32 || next == 0x0E33 ||
+      next == 0x0E45 || next == 0x0E46 || next == 0x0E2F) {
+    return false;  /* sara a, sara aa, sara am, lakkhangyao, mai yamok, paiyannoi */
+  }
+
+  uint16_t back = i - 1;
+  while (back > 0 && ((uint8_t)word[back] & 0xC0) == 0x80) back--;
+  const char *prevStart = word + back;
+  uint16_t prev = nextCodepoint(prevStart);
+  if (prev >= 0x0E40 && prev <= 0x0E44) return false;  /* leading vowels */
+  return true;
+}
+
+/* Whether byte i of a word is certainly a syllable edge: before a vowel
+   written ahead of its letter, or after one that closes a syllable. A
+   break anywhere else may land mid-syllable. */
+static bool isSyllableEdge(const char *word, uint16_t i) {
+  const char *here = word + i;
+  uint16_t next = nextCodepoint(here);
+  if (next >= 0x0E40 && next <= 0x0E44) return true;
+
+  uint16_t back = i - 1;
+  while (back > 0 && ((uint8_t)word[back] & 0xC0) == 0x80) back--;
+  const char *prevStart = word + back;
+  uint16_t prev = nextCodepoint(prevStart);
+  return prev == 0x0E30 || prev == 0x0E32 || prev == 0x0E33 || prev == 0x0E46;
+}
+
+/* How many bytes of word can follow line[0..lineLen) and still fit in
+   boxW, cutting only where canBreakBefore allows. 0 if none can. A
+   syllable edge is preferred when it keeps at least half the fill, since
+   a line that ends a little short reads far better than a split word;
+   edgesOnly refuses anything else. */
+static uint16_t fitPrefix(char *line, uint16_t lineLen, const char *word,
+                          uint16_t wordLen, uint8_t boxW,
+                          bool edgesOnly = false) {
+  uint16_t fit = 0;
+  uint16_t fitEdge = 0;
+  for (uint16_t i = 1; i <= wordLen && lineLen + i < MAX_WRAP_CHARS; i++) {
+    if (i < wordLen && !canBreakBefore(word, i)) continue;
+    memcpy(line + lineLen, word, i);
+    line[lineLen + i] = 0;
+    if (textWidth(line) > boxW) break;
+    fit = i;
+    if (i == wordLen || isSyllableEdge(word, i)) fitEdge = i;
+  }
+  line[lineLen] = 0;
+  return (edgesOnly || fitEdge * 2 >= fit) ? fitEdge : fit;
+}
+
 /* ---- text wrapping --------------------------------------------------
  *
  * A lyric line is whatever length the song makes it, so the band has to
@@ -499,38 +661,54 @@ static bool wrapText(const char *text, uint8_t boxW, uint8_t maxLines) {
       while (*p && *p != ' ') p++;
       uint16_t wordLen = (uint16_t)(p - wordStart);
 
-      if (curLen + (curLen ? 1 : 0) + wordLen >= MAX_WRAP_CHARS) {
-        p = wordStart;
-        break;
-      }
-
       uint16_t pos = curLen;
       memcpy(cand, cur, curLen);
       if (curLen) cand[pos++] = ' ';
-      memcpy(cand + pos, wordStart, wordLen);
-      pos += wordLen;
-      cand[pos] = 0;
 
-      if (u8g2.getUTF8Width(cand) <= boxW) {
-        memcpy(cur, cand, pos + 1);
-        curLen = pos;
-        while (*p == ' ') p++;
-      } else {
-        p = wordStart;  /* Does not fit: this word starts the next line. */
-        break;
+      if (pos + wordLen < MAX_WRAP_CHARS) {
+        memcpy(cand + pos, wordStart, wordLen);
+        cand[pos + wordLen] = 0;
+        if (textWidth(cand) <= boxW) {
+          memcpy(cur, cand, pos + wordLen + 1);
+          curLen = pos + wordLen;
+          while (*p == ' ') p++;
+          continue;
+        }
       }
+
+      /* Does not fit. A Thai phrase is split to fill the rest of the
+         line, since it may be most of a sentence, but only at a syllable
+         edge: a line that already has text on it can afford to end
+         short. Anything else starts the next line whole. */
+      p = wordStart;
+      if (curLen && hasThai(wordStart, wordLen)) {
+        uint16_t fit = fitPrefix(cand, pos, wordStart, wordLen, boxW, true);
+        if (fit) {
+          memcpy(cand + pos, wordStart, fit);
+          cand[pos + fit] = 0;
+          memcpy(cur, cand, pos + fit + 1);
+          curLen = pos + fit;
+          p = wordStart + fit;
+        }
+      }
+      break;
     }
 
     if (curLen == 0) {
       /* A single word wider than the panel. Break it mid-word, otherwise
          the loop cannot advance and nothing would ever be drawn. */
       const char *wordStart = p;
-      uint16_t fit = 1;
-      for (uint16_t i = 1; wordStart[i] && i < MAX_WRAP_CHARS - 1; i++) {
-        memcpy(cand, wordStart, i);
-        cand[i] = 0;
-        if (u8g2.getUTF8Width(cand) <= boxW) fit = i;
-        else break;
+      uint16_t wordLen = 0;
+      while (wordStart[wordLen] && wordStart[wordLen] != ' ') wordLen++;
+      cur[0] = 0;
+      uint16_t fit = fitPrefix(cur, 0, wordStart, wordLen, boxW);
+      if (fit == 0) {
+        /* Not even one character fits; take one anyway to make progress. */
+        fit = 1;
+        while (fit < wordLen && fit < MAX_WRAP_CHARS - 1 &&
+               !canBreakBefore(wordStart, fit)) {
+          fit++;
+        }
       }
       memcpy(cur, wordStart, fit);
       cur[fit] = 0;
@@ -548,17 +726,35 @@ static bool wrapText(const char *text, uint8_t boxW, uint8_t maxLines) {
 
 struct TextStyle {
   const uint8_t *font;
-  uint8_t maxLines;
+  uint8_t maxLines;   /* how many lines a layout may run to */
   uint8_t lineH;
+  uint8_t pageLines;  /* how many of them the band shows at once */
 };
 
-/* Largest first. The first style that fits the whole line wins. */
+/* Largest first. The first style that fits the whole line wins. Latin
+   and Thai each have their own run, chosen by whether the line has any
+   Thai in it; the Thai faces carry ASCII too, so mixed lines are fine. */
 static const TextStyle MAIN_STYLES[] = {
-    {u8g2_font_helvB10_tf, 2, 13},
-    {u8g2_font_6x12_tf, 3, 11},
-    {u8g2_font_5x7_tf, 4, 8},
+    {u8g2_font_helvB10_tf, 2, 13, 2},
+    {u8g2_font_6x12_tf, 3, 11, 3},
+    {u8g2_font_5x7_tf, 4, 8, 4},
+    /* Thai stacks marks above and below the letters, so a line needs 17px
+       even at 14px, and there is no smaller Thai face. Two lines fill the
+       band; a longer line pages through two at a time instead of being
+       cut off. */
+    {u8g2_font_etl16thai_t, 1, 19, 1},
+    {u8g2_font_etl14thai_t, 2, 17, 2},
+    {u8g2_font_etl14thai_t, 6, 17, 2},
 };
-static const uint8_t MAIN_STYLE_COUNT = 3;
+static const uint8_t LATIN_STYLE_FIRST = 0;
+static const uint8_t THAI_STYLE_FIRST = 3;
+static const uint8_t MAIN_STYLE_COUNT = 6;
+
+/* How long each page of a paged line stays up. Split from the line's own
+   hold where the PC sent one, so the pages keep pace with the singing. */
+static const uint16_t PAGE_MIN_MS = 1200;
+static const uint16_t PAGE_MAX_MS = 3500;
+static const uint16_t PAGE_OPEN_MS = 2500;  /* no hold: cycle at this rate */
 
 /* The band between the rule and the equalizer row. */
 static const uint8_t BAND_TOP = 14;
@@ -566,13 +762,18 @@ static const uint8_t BAND_BOTTOM = 50;
 
 
 /* Lay text out once. Call when the text changes, not when drawing. */
-static void prepareWrap(const char *text, uint8_t boxW, WrappedText &out) {
+static void prepareWrap(const char *text, uint8_t boxW, uint32_t holdMs,
+                        WrappedText &out) {
   out.count = 0;
   out.styleIndex = 0;
+  out.holdMs = holdMs;
   if (text == NULL || text[0] == 0) return;
 
-  uint8_t chosen = MAIN_STYLE_COUNT - 1;
-  for (uint8_t i = 0; i < MAIN_STYLE_COUNT; i++) {
+  bool thai = hasThai(text);
+  uint8_t first = thai ? THAI_STYLE_FIRST : LATIN_STYLE_FIRST;
+  uint8_t last = thai ? MAIN_STYLE_COUNT : THAI_STYLE_FIRST;
+  uint8_t chosen = last - 1;
+  for (uint8_t i = first; i < last; i++) {
     u8g2.setFont(MAIN_STYLES[i].font);
     if (wrapText(text, boxW, MAIN_STYLES[i].maxLines)) {
       chosen = i;
@@ -588,24 +789,47 @@ static void prepareWrap(const char *text, uint8_t boxW, WrappedText &out) {
   }
 }
 
-/* Draws a prepared layout, vertically centred. yShift moves the whole
-   block, which is what the slide transition uses; the caller clips to the
-   band so shifted text cannot escape it. */
-static void drawWrapped(const WrappedText &wrapped, int16_t yShift) {
+/* Which page of a layout is showing, sinceMs after the line arrived.
+   With a known hold the pages share it and the last one stays put; an
+   open-ended line, such as a title card, cycles. */
+static uint8_t currentPage(const WrappedText &wrapped, uint32_t sinceMs) {
+  const TextStyle &style = MAIN_STYLES[wrapped.styleIndex];
+  if (wrapped.count <= style.pageLines) return 0;
+  uint8_t pages = (wrapped.count + style.pageLines - 1) / style.pageLines;
+
+  if (wrapped.holdMs == 0) return (uint8_t)((sinceMs / PAGE_OPEN_MS) % pages);
+
+  uint32_t pageMs = wrapped.holdMs / pages;
+  if (pageMs < PAGE_MIN_MS) pageMs = PAGE_MIN_MS;
+  if (pageMs > PAGE_MAX_MS) pageMs = PAGE_MAX_MS;
+  uint32_t page = sinceMs / pageMs;
+  return (uint8_t)(page < pages ? page : pages - 1);
+}
+
+/* Draws one page of a prepared layout, vertically centred. yShift moves
+   the whole block, which is what the slide transition uses; the caller
+   clips to the band so shifted text cannot escape it. */
+static void drawWrapped(const WrappedText &wrapped, int16_t yShift,
+                        uint8_t page) {
   if (wrapped.count == 0) return;
 
   const TextStyle style = MAIN_STYLES[wrapped.styleIndex];
   u8g2.setFont(style.font);
 
-  uint8_t total = wrapped.count * style.lineH;
+  uint8_t first = page * style.pageLines;
+  if (first >= wrapped.count) first = 0;
+  uint8_t shown = wrapped.count - first;
+  if (shown > style.pageLines) shown = style.pageLines;
+
+  uint8_t total = shown * style.lineH;
   uint8_t bandH = BAND_BOTTOM - BAND_TOP;
   uint8_t top = BAND_TOP + (bandH > total ? (uint8_t)((bandH - total) / 2) : 0);
 
-  for (uint8_t i = 0; i < wrapped.count; i++) {
+  for (uint8_t i = 0; i < shown; i++) {
     int16_t y = (int16_t)(top + (i + 1) * style.lineH - 3) + yShift;
     /* Skip lines that have travelled clear of the band. */
     if (y < (int16_t)BAND_TOP - 20 || y > (int16_t)BAND_BOTTOM + 20) continue;
-    u8g2.drawUTF8(2, y, wrapped.lines[i]);
+    drawText(2, y, wrapped.lines[first + i]);
   }
 }
 
@@ -734,10 +958,12 @@ static void drawLyrics() {
        line's layout is already finished, so it is copied rather than
        recomputed. */
     if (wrapDirty) {
+      wrapPrevPage = currentPage(wrapCurrent, millis() - wrapShownMs);
       wrapPrev = wrapCurrent;
       /* Wrap clear of the mascot's column. Masking over the text
          afterwards blanked the end of any line that reached it. */
-      prepareWrap(frame.mainText, CAT_PERCH_X - 6, wrapCurrent);
+      prepareWrap(frame.mainText, CAT_PERCH_X - 6, frame.holdMs, wrapCurrent);
+      wrapShownMs = transitionStartMs;
       wrapDirty = false;
     }
 
@@ -752,16 +978,19 @@ static void drawLyrics() {
       int16_t travel = (int16_t)(BAND_BOTTOM - BAND_TOP);
 
       u8g2.setClipWindow(0, BAND_TOP, SCREEN_W, BAND_BOTTOM);
-      drawWrapped(wrapPrev, (int16_t)(-eased * travel));
-      drawWrapped(wrapCurrent, (int16_t)((1.0f - eased) * travel));
+      drawWrapped(wrapPrev, (int16_t)(-eased * travel), wrapPrevPage);
+      drawWrapped(wrapCurrent, (int16_t)((1.0f - eased) * travel), 0);
       u8g2.setMaxClipWindow();
     } else {
-      drawWrapped(wrapCurrent, 0);
+      drawWrapped(wrapCurrent, 0, currentPage(wrapCurrent, since));
 
     }
 
+    /* A Thai line is 17px tall, so even one leaves no room for a label
+       under a second. */
+    uint8_t labelRoom = wrapCurrent.styleIndex >= THAI_STYLE_FIRST ? 1 : 2;
     if (strcmp(frame.lyr, "synced") == 0) {
-    } else if (wrapCount <= 2) {
+    } else if (wrapCount <= labelRoom) {
       /* Only label the fallback when the title left room for it. */
       u8g2.setFont(u8g2_font_4x6_tf);
       u8g2.drawUTF8(2, BAND_BOTTOM, strcmp(frame.lyr, "plain") == 0
