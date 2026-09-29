@@ -180,18 +180,35 @@ Optional. Without `numpy` and `pyaudiowpatch`, or if nothing arrives for
 
 ### Bobbing on the beat
 
-Onsets come from positive spectral flux in the lower bands, and the gaps
-between them give a tempo. Once eight consecutive gaps agree closely the
-tempo is taken as settled and stops being re-estimated: tracking it forever
-means every vocal transient gets a vote, and a steady song would slowly drag
-its own tempo off. After that the beat grid only creeps toward onsets rather
-than following them, and a track change clears it.
+Each frame adds one number to an onset envelope: how much energy has just
+appeared in the lower bands, with kick and bass counted twice. The beat is
+found by fitting a grid to the last eight seconds of it, trying every tempo
+from 60 to 150 BPM at every offset, and taking the grid whose points land on
+the most energy on average. Averaging per point rather than summing is what
+tells a beat from the strums between beats: a grid on the eighth notes has
+twice the points, but the accents are all on the beat. A song faster than
+150 BPM is nodded at half speed, which still lands on the beat.
 
-The phase is what goes down the wire, not the beats themselves, so a missed
-onset does not stall the animation — it keeps moving on the grid and
-resynchronises when the next one lands. The phase is advanced by
-`beat_lead_ms` to cancel the pipeline's own latency: a 1024-sample buffer at
-48kHz is 21ms before analysis even starts.
+Nothing is published until the same grid has been found three times, a
+second apart, so the cat keeps still through a drumless intro rather than
+guessing. The tempo is then locked: it may only drift 3% from there, so
+singing never gets to drag it. The grid is refitted every quarter second and
+eased toward, which keeps the bob continuous. Every two seconds the whole
+range is fitted again, and a clearly better grid three times running takes
+over, which catches a lock taken on an intro or half a beat out. After a
+pause, or a second with nothing on the beat, the offset is found afresh, and
+the cat finishes its bob and rests meanwhile. A track change clears it all.
+
+This replaced timing the gaps between detected onsets, which went wrong in
+two ways. The gaps come in whole 21ms frames, so the frozen tempo was up to
+2% out, and the lag that built up reached a quarter to half a beat even on a
+clean four-on-the-floor. And strummed eighth notes counted as beats: in the
+log, 40% of Thai songs locked at double speed. On synthetic grooves with
+known beats, dips landing within 60ms of a beat went from 15-45% to 98-100%.
+
+The phase is what goes down the wire, not the beats themselves, and it is
+advanced by `beat_lead_ms` to cancel the pipeline's own latency: a
+1024-sample buffer at 48kHz is 21ms before analysis even starts.
 
 ### Thai lyrics
 
@@ -398,8 +415,9 @@ and paused tabs. Something else that is actually playing replaces the song at
 once, because a skip to the next track looks exactly the same. And a song
 that really was closed stays up for as long as the hold, 15 seconds at most.
 
-**The cat takes a bar or two to find each new song's beat.** The tempo has to
-be measured before the bob can follow it.
+**The cat waits about five seconds into each song before it bobs.** The beat
+has to be found the same way three times before it is shown, and a drumless
+intro waits for the drums. That is deliberate: a guessing cat looked worse.
 
 ## Troubleshooting
 
