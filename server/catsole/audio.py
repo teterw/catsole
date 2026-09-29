@@ -59,39 +59,69 @@ TILT_DB_PER_BAND = 2.3
 PEAK_DECAY = 0.995
 MIN_PEAK = 0.30
 
-# Beat tracking. Onsets come from positive spectral flux in the lower
-# bands -- energy appearing where there was less a moment ago, which is
-# what a drum hit is. Hopping on every onset looks erratic, because
-# detection is never perfect, so the gaps between onsets are used to
-# estimate a period and the beat is predicted on that grid instead.
-FLUX_HISTORY = 48
-ONSET_SENSITIVITY = 1.45
-MIN_BEAT_GAP_S = 0.26   # 230 BPM ceiling
-MAX_BEAT_GAP_S = 1.10   # 55 BPM floor
+# Beat tracking.
+#
+# Each frame adds one number to an onset envelope: how much energy has just
+# appeared in the lower bands, which is what a drum hit or a strum is. The
+# beat is found by fitting a grid to the last few seconds of it -- every
+# tempo in the bob's range, at every offset -- and taking the grid whose
+# points land on the most energy on average.
+#
+# This replaced timing the gaps between detected onsets. Those gaps came in
+# whole 21ms frames, so their median was up to 2% off the true tempo; the
+# tempo was then frozen, and the lag that left grew to a quarter or half a
+# beat. Strummed eighth notes, common in Thai pop, also counted as beats,
+# so 40% of Thai songs in the log locked at double speed. A grid fitted
+# over seconds of audio is not limited by the frame size, and averaging
+# per grid point rather than summing favours accented beats over the
+# strums between them.
+BEAT_MIN_BPM = 60.0
+BEAT_MAX_BPM = 150.0      # anything faster is nodded at half speed, still on the beat
+# A gentle preference for a comfortable nodding speed, so a groove that
+# fits at both 62 and 124 BPM is nodded at 124.
+BEAT_PRIOR_BPM = 110.0
+BEAT_PRIOR_OCTAVES = 1.0
+ENVELOPE_S = 8.0
+MIN_ENVELOPE_S = 4.0
+REPHASE_ENVELOPE_S = 2.5  # the tempo is known; only the offset is sought
+# Coarser than this, a period a few ms out smears across fifteen beats and
+# loses to a wrong grid that happens to sit on a step.
+PERIOD_STEP_S = 0.003
+ESTIMATE_EVERY = 12       # frames between estimates, about 0.25s
+MIN_CLARITY = 1.6         # grid mean over envelope mean, to count at all
 
-# How far the beat grid is dragged toward each detected onset. Snapping
-# the grid onto every detection made the phase jump backwards whenever
-# detection was early or late, which showed up as a stutter. Correcting
-# a fifth of the error keeps the phase continuous and still converges
-# within a few beats.
-PHASE_CORRECTION = 0.20
+# Nothing is published until the same grid is found three times a second
+# apart. Estimates a quarter second apart share nearly all their data, so
+# agreeing would prove nothing; a still cat is better than a guessing one.
+LOCK_TRY_EVERY = 4
+LOCK_AGREE = 3
+LOCK_TOLERANCE = 0.015
 
-# A rhythm can be counted at one speed or at twice it, and the median
-# flips between the two when a track has offbeats as strong as its
-# downbeats. Each flip resets the grid, which is what reads as the
-# animation getting confused. A new estimate that is half or double
-# the current one has to persist before it is believed.
-DOUBLE_TIME_GUARD = 6
+# Once locked, the tempo only moves within a few percent -- singing never
+# gets to drag it -- and the grid eases toward each fit rather than
+# jumping, so the bob stays continuous.
+TRACK_RANGE = 0.03
+PHASE_GAIN = 0.3
+PERIOD_GAIN = 0.15
 
-# Once the gaps agree closely enough the tempo is taken as settled and
-# stops being re-estimated. Tracking it continuously means every vocal
-# transient gets a vote, and singing produces plenty of onsets that are
-# not the beat -- so a steady song would slowly drag its own tempo off.
-# After locking, the grid only creeps toward onsets rather than following
-# them, which keeps it honest against drift without chasing the vocal.
-LOCK_AFTER_GAPS = 8
-LOCK_SPREAD = 0.14      # relative standard deviation that counts as settled
-LOCKED_CORRECTION = 0.04
+# A lock taken on an intro, or half a beat out, would otherwise last the
+# whole song. Every couple of seconds the whole range is fitted again, and
+# a clearly better grid three times running takes over.
+RECHECK_EVERY = 8
+RELOCK_MARGIN = 1.15
+RELOCK_AFTER = 3
+
+# After a pause, or a second with nothing on the beat, the song may come
+# back anywhere against the grid, so the offset is found afresh; the beat
+# is withheld meanwhile. If it does not come back near the old tempo, the
+# lock is dropped and found from scratch.
+QUIET_AFTER = 4
+REPHASE_GIVE_UP = 8
+
+
+def _nod_preference(period: float) -> float:
+    bpm = 60.0 / period
+    return math.exp(-0.5 * (math.log2(bpm / BEAT_PRIOR_BPM) / BEAT_PRIOR_OCTAVES) ** 2)
 
 
 def band_edges(rate: int, bands: int = BANDS) -> list[tuple[int, int]]:
@@ -132,14 +162,29 @@ class AudioLevels:
         self.device_name = ""
         self.last_error = ""
 
-        self._flux_hist = collections.deque(maxlen=FLUX_HISTORY)
-        self._gaps = collections.deque(maxlen=10)
-        self._prev_bands = None
-        self._last_onset = 0.0
+        # Published to the render loop, under _lock.
         self._period = 0.0
         self._beat_at = 0.0   # reference beat, free-running
-        self._flips = 0
         self._locked = False
+        # Bumped by reset_beat, so an estimate already under way for the
+        # last song cannot publish over the reset.
+        self._generation = 0
+
+        # Everything below belongs to the capture thread alone.
+        self._seen_generation = 0
+        self._frame_s = CHUNK / 48000.0
+        self._env = collections.deque(maxlen=int(ENVELOPE_S / self._frame_s))
+        self._prev_bands = None
+        self._clock = None
+        self._since = 0
+        self._estimates = 0
+        self._since_lock_try = 0
+        self._recent = collections.deque(maxlen=LOCK_AGREE)
+        self._locked_period = 0.0
+        self._better = 0
+        self._quiet = 0
+        self._rephase = False
+        self._rephase_tries = 0
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -178,13 +223,16 @@ class AudioLevels:
 
     def reset_beat(self) -> None:
         """Forget the tempo. Called on a track change, since the next song
-        has no reason to share the last one's pulse."""
+        has no reason to share the last one's pulse.
+
+        What is published stops at once. The tracking state belongs to the
+        capture thread, which clears it on its next frame.
+        """
         with self._lock:
             self._locked = False
             self._period = 0.0
             self._beat_at = 0.0
-            self._flips = 0
-        self._gaps.clear()
+            self._generation += 1
 
     @property
     def bpm(self) -> float:
@@ -230,87 +278,221 @@ class AudioLevels:
         return chosen
 
     def _track_beat(self, bands: list[float]) -> None:
-        """Find onsets and keep a running estimate of the beat period."""
+        """Add this frame to the onset envelope and keep the grid fitted."""
+        with self._lock:
+            generation = self._generation
+        if generation != self._seen_generation:
+            self._seen_generation = generation
+            self._forget()
+
+        f = self._frame_s
+        read = time.monotonic()
+        # Frames are timed by count rather than by when each read returned:
+        # reads wobble by about 7ms and arrive in bursts. The count is eased
+        # toward the reads so it follows the audio clock, and restarts when
+        # audio stops arriving for a while, as it does on a pause.
+        if self._clock is None or abs(read - (self._clock + f)) > 0.25:
+            self._clock = read
+            self._env.clear()
+            self._prev_bands = None
+            if self._locked_period > 0:
+                self._start_rephase(generation)
+        else:
+            self._clock += f
+            self._clock += 0.02 * (read - self._clock)
+
         current = np.array(bands[:8], dtype=np.float32)
         if self._prev_bands is None:
             self._prev_bands = current
             return
-
-        # Only rises count: energy fading away is not an onset.
-        flux = float(np.sum(np.maximum(0.0, current - self._prev_bands)))
+        # Only rises count: energy fading away is not an onset. The lowest
+        # bands count twice, since kick and bass mark the beat more than
+        # anything strummed over it.
+        rise = np.maximum(0.0, current - self._prev_bands)
         self._prev_bands = current
-        self._flux_hist.append(flux)
+        self._env.append(float(rise.sum() + rise[:4].sum()))
 
-        if len(self._flux_hist) < 12:
+        self._since += 1
+        need = REPHASE_ENVELOPE_S if self._rephase else MIN_ENVELOPE_S
+        if self._since < ESTIMATE_EVERY or len(self._env) * f < need:
+            return
+        self._since = 0
+        self._estimates += 1
+
+        env = np.asarray(self._env, dtype=np.float32)
+        newest = self._clock - f / 2.0  # an attack lands mid-frame, on average
+        if self._locked_period <= 0:
+            self._try_lock(env, newest, generation)
+        elif self._rephase:
+            self._find_again(env, newest, generation)
+        else:
+            self._follow(env, newest, generation)
+
+    def _try_lock(self, env, newest: float, generation: int) -> None:
+        self._since_lock_try += 1
+        if self._since_lock_try < LOCK_TRY_EVERY:
+            return
+        self._since_lock_try = 0
+
+        score, period, offset = self._fit(env)
+        if not self._clear(score, period, env):
+            self._recent.clear()
+            return
+        beat_at = newest - offset
+        if self._recent:
+            last_period, last_at = self._recent[-1]
+            drift = ((beat_at - last_at) / last_period) % 1.0
+            if (abs(period / last_period - 1.0) > LOCK_TOLERANCE
+                    or min(drift, 1.0 - drift) > 0.15):
+                self._recent.clear()
+        self._recent.append((period, beat_at))
+        if len(self._recent) < LOCK_AGREE:
             return
 
-        history = np.array(self._flux_hist, dtype=np.float32)
-        threshold = history.mean() + ONSET_SENSITIVITY * history.std()
-        now = time.monotonic()
+        self._locked_period = period
+        self._better = 0
+        self._quiet = 0
+        if self._publish(generation, period, beat_at, locked=True):
+            log.info("tempo locked at %.1f BPM", 60.0 / period)
 
-        if flux <= threshold or flux < 0.04:
+    def _find_again(self, env, newest: float, generation: int) -> None:
+        near = self._locked_period
+        periods = np.linspace(near * (1 - TRACK_RANGE), near * (1 + TRACK_RANGE), 13)
+        score, period, offset = self._search(
+            env, periods, lambda p: np.arange(0.0, p, self._frame_s)
+        )
+        score, period, offset = self._refine(env, period, offset)
+        if self._clear(score, period, env):
+            self._rephase = False
+            self._quiet = 0
+            self._publish(generation, period, newest - offset)
             return
-        if now - self._last_onset < MIN_BEAT_GAP_S:
-            return
+        # The beat has not come back near the old tempo. Rather than wait
+        # on it for the rest of the song, start over.
+        self._rephase_tries += 1
+        if self._rephase_tries >= REPHASE_GIVE_UP:
+            self._rephase = False
+            self._locked_period = 0.0
+            self._recent.clear()
+            self._publish(generation, 0.0, 0.0, locked=False)
 
-        if self._last_onset > 0:
-            gap = now - self._last_onset
-            if MIN_BEAT_GAP_S <= gap <= MAX_BEAT_GAP_S:
-                self._gaps.append(gap)
-
-        self._last_onset = now
-
-        # The median rejects the occasional double-time hit or missed beat
-        # that a mean would smear through the estimate.
-        if len(self._gaps) >= 4 and not self._locked:
-            candidate = float(np.median(self._gaps))
-            with self._lock:
-                if self._period > 0:
-                    ratio = candidate / self._period
-                    halved = 0.40 < ratio < 0.62
-                    doubled = 1.60 < ratio < 2.50
-                    if halved or doubled:
-                        self._flips += 1
-                        if self._flips < DOUBLE_TIME_GUARD:
-                            candidate = self._period
-                        else:
-                            self._flips = 0
-                    else:
-                        self._flips = 0
-                self._period = candidate
-
-                # Settled once enough gaps agree closely. From here the
-                # tempo is held and only the phase is nudged.
-                if len(self._gaps) >= LOCK_AFTER_GAPS:
-                    gaps = np.array(self._gaps, dtype=np.float32)
-                    mean = float(gaps.mean())
-                    spread = float(gaps.std() / mean) if mean > 0 else 1.0
-                    if spread <= LOCK_SPREAD:
-                        self._locked = True
-                        log.info(
-                            "tempo locked at %.1f BPM (spread %.0f%%)",
-                            60.0 / self._period,
-                            spread * 100,
-                        )
-
+    def _follow(self, env, newest: float, generation: int) -> None:
         with self._lock:
-            if self._period <= 0:
-                return
-            if self._beat_at <= 0:
-                self._beat_at = now
-                return
-
-            # Drag the grid toward this onset instead of restarting it on
-            # top of it. Where the onset fell relative to the nearest grid
-            # beat, signed so an early hit pulls back and a late one pushes
-            # forward.
-            offset = (now - self._beat_at) % self._period
-            if offset > self._period / 2.0:
-                offset -= self._period
-            correction = (
-                LOCKED_CORRECTION if self._locked else PHASE_CORRECTION
+            period, beat_at = self._period, self._beat_at
+        if period <= 0:
+            return
+        offset_now = (newest - beat_at) % period
+        score, fitted, offset = self._refine(env, period, offset_now)
+        if not self._clear(score, fitted, env):
+            self._quiet += 1
+            if self._quiet >= QUIET_AFTER:
+                self._start_rephase(generation)
+        else:
+            self._quiet = 0
+            error = offset - offset_now
+            if error > fitted / 2:
+                error -= fitted
+            if error < -fitted / 2:
+                error += fitted
+            target = period + PERIOD_GAIN * (fitted - period)
+            lo = self._locked_period * (1 - TRACK_RANGE)
+            hi = self._locked_period * (1 + TRACK_RANGE)
+            self._publish(
+                generation, min(hi, max(lo, target)), beat_at - PHASE_GAIN * error
             )
-            self._beat_at += offset * correction
+
+        if self._estimates % RECHECK_EVERY:
+            return
+        best, best_period, best_offset = self._fit(env)
+        same_tempo = abs(best_period / period - 1.0) <= TRACK_RANGE
+        drift = ((best_offset - offset_now) / period) % 1.0
+        same_grid = same_tempo and min(drift, 1.0 - drift) <= 0.15
+        if not same_grid and best > RELOCK_MARGIN * score:
+            self._better += 1
+        else:
+            self._better = 0
+        if self._better >= RELOCK_AFTER:
+            self._better = 0
+            self._rephase = False
+            self._locked_period = best_period
+            if self._publish(generation, best_period, newest - best_offset):
+                log.info("tempo moved to %.1f BPM", 60.0 / best_period)
+
+    def _start_rephase(self, generation: int) -> None:
+        self._rephase = True
+        self._rephase_tries = 0
+        self._publish(generation, 0.0, 0.0)
+
+    def _publish(self, generation: int, period: float, beat_at: float,
+                 locked: bool | None = None) -> bool:
+        with self._lock:
+            if self._generation != generation:
+                return False  # a track change landed mid-estimate
+            self._period = period
+            self._beat_at = beat_at
+            if locked is not None:
+                self._locked = locked
+            return True
+
+    def _forget(self) -> None:
+        self._env.clear()
+        self._prev_bands = None
+        self._since = 0
+        self._since_lock_try = 0
+        self._recent.clear()
+        self._locked_period = 0.0
+        self._better = 0
+        self._quiet = 0
+        self._rephase = False
+        self._rephase_tries = 0
+
+    # ---- grid fitting ----------------------------------------------------
+
+    def _clear(self, score: float, period: float, env) -> bool:
+        """Whether a fit stands out from the envelope at all."""
+        mean = float(env.mean())
+        return mean > 0 and score / _nod_preference(period) / mean >= MIN_CLARITY
+
+    def _grid_means(self, env, period: float, offsets):
+        """Mean envelope on the grid at each offset, in seconds back from
+        the newest frame, reading between frames by interpolation."""
+        f, n = self._frame_s, len(env)
+        k = np.arange(int((n - 1) * f / period) + 1)
+        idx = (n - 1) - (offsets[:, None] + k[None, :] * period) / f
+        inside = idx >= 0
+        lo = np.clip(np.floor(idx).astype(int), 0, n - 1)
+        hi = np.clip(lo + 1, 0, n - 1)
+        w = idx - np.floor(idx)
+        values = (env[lo] * (1 - w) + env[hi] * w) * inside
+        return values.sum(axis=1) / np.maximum(inside.sum(axis=1), 1)
+
+    def _search(self, env, periods, offsets_for):
+        """The best (score, period, offset) among the candidate grids."""
+        best = (-1.0, 0.0, 0.0)
+        for period in periods:
+            offsets = offsets_for(period)
+            means = self._grid_means(env, period, offsets)
+            j = int(np.argmax(means))
+            score = float(means[j]) * _nod_preference(period)
+            if score > best[0]:
+                best = (score, float(period), float(offsets[j]))
+        return best
+
+    def _refine(self, env, period: float, offset: float):
+        """The best grid close to the one given."""
+        periods = np.linspace(period * (1 - TRACK_RANGE), period * (1 + TRACK_RANGE), 25)
+        return self._search(
+            env, periods,
+            lambda p: np.linspace(offset - 0.12 * p, offset + 0.12 * p, 25) % p,
+        )
+
+    def _fit(self, env):
+        """The best grid over the whole range: coarse, then refined."""
+        coarse = np.arange(60.0 / BEAT_MAX_BPM, 60.0 / BEAT_MIN_BPM, PERIOD_STEP_S)
+        _, period, offset = self._search(
+            env, coarse, lambda p: np.arange(0.0, p, self._frame_s)
+        )
+        return self._refine(env, period, offset)
 
     def _run(self) -> None:
         audio = None
@@ -325,6 +507,8 @@ class AudioLevels:
 
             rate = int(device["defaultSampleRate"])
             channels = int(device["maxInputChannels"])
+            self._frame_s = CHUNK / float(rate)
+            self._env = collections.deque(maxlen=int(ENVELOPE_S / self._frame_s))
             self.device_name = device["name"]
 
             stream = audio.open(
