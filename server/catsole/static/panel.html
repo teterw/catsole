@@ -511,6 +511,7 @@
 
     setText("v-lyr", data.lyrics_kind === "synced" ? "synced"
       : data.lyrics_kind === "plain" ? "found, not timed"
+      : data.lyrics_kind === "video" ? "a show: time shown instead"
       : "none found", data.lyrics_kind === "none");
 
     var cpu = data.stats.cpu || {}, gpu = data.stats.gpu || {};

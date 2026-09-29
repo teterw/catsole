@@ -476,3 +476,8 @@ def test_thai_lines_go_out_with_their_word_breaks(console):
     console.now_playing = playing_song(position_ms=5_000)
     console.lyrics = Lyrics(kind="synced", synced=[(1000, "ทดสอบข้อความ")])
     assert console.build_frame()["main"] == "ทดสอบ\u200bข้อความ"
+
+
+def test_panel_reports_a_show_rather_than_missing_lyrics(console):
+    console._on_media(netflix())
+    assert console.snapshot()["lyrics_kind"] == "video"

@@ -601,7 +601,10 @@ class DeskConsole:
                 "is_playing": playing.is_playing,
                 "app": playing.app_id,
             },
-            "lyrics_kind": self.lyrics.kind,
+            # A show has no lyrics to find, which is not the same as none found.
+            "lyrics_kind": "video"
+            if playing is not None and netflix_kind(playing) == "watch"
+            else self.lyrics.kind,
             "stats": self.stats,
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
             "busy": self._busy,
