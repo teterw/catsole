@@ -145,7 +145,9 @@ struct Frame {
   char meta[72];
   /* Room for a long Thai line: each Thai character is three bytes of
      UTF-8, and its vowels and tone marks are characters of their own. */
-  char mainText[224];
+  /* A long Thai line with its word breaks marked came to 226 bytes in real
+     lyrics: three a character, and three more for each break. */
+  char mainText[288];
   uint32_t holdMs;  /* how long the main line stays up, 0 when open-ended */
   char lyr[8];
   char state[10];
@@ -211,7 +213,9 @@ static uint32_t wrapShownMs = 0;
 static bool wrapDirty = true;
 
 #define MAX_WRAP_LINES 6
-#define MAX_WRAP_CHARS 80
+/* Bytes, not characters: a Thai row of twelve letters with their marks
+   and word breaks came to 78 in real lyrics. */
+#define MAX_WRAP_CHARS 96
 
 /* A finished layout: which lines, at which size.
  *
@@ -225,6 +229,11 @@ struct WrappedText {
   uint8_t count;
   uint8_t styleIndex;
   uint32_t holdMs;
+  /* Letters on each row, marks not counted: what a paged line's time is
+     shared out by. */
+  uint8_t weight[MAX_WRAP_LINES];
+  /* When each page comes up, in ms after the line arrived. */
+  uint16_t pageAt[MAX_WRAP_LINES];
 };
 
 static WrappedText wrapCurrent;
@@ -232,6 +241,11 @@ static WrappedText wrapPrev;
 /* The page the outgoing line was on when it was replaced, so it slides
    out from where it was rather than jumping back to its first page. */
 static uint8_t wrapPrevPage = 0;
+/* The page on screen and the one it replaced, so turning a page slides the
+   way changing a line does instead of jumping. */
+static uint8_t wrapPageShown = 0;
+static uint8_t wrapPageFrom = 0;
+static uint32_t pageSlideStartMs = 0;
 
 /* ---- serial receive -------------------------------------------------- */
 static char rxBuf[896];
@@ -464,7 +478,10 @@ static void dimBuffer() {
   }
 }
 
-static void drawMarquee(const char *text, uint8_t baseline, uint8_t boxW) {
+/* above and below are how far the current face reaches from its baseline,
+   which the clip has to allow; the defaults fit the 5x7 meta strip. */
+static void drawMarquee(const char *text, uint8_t baseline, uint8_t boxW,
+                        uint8_t above = 8, uint8_t below = 3) {
   uint16_t width = u8g2.getUTF8Width(text);
   if (width <= boxW) {
     u8g2.drawUTF8(2, baseline, text);
@@ -478,8 +495,8 @@ static void drawMarquee(const char *text, uint8_t baseline, uint8_t boxW) {
      screen must not be allowed to go negative here: it wraps to a huge
      value, the clip window stops meaning anything, and the off-screen
      copy of the text gets drawn straight across the rest of the panel. */
-  uint8_t top = (baseline >= 8) ? (uint8_t)(baseline - 8) : 0;
-  uint8_t bottom = (uint8_t)min((int)baseline + 3, (int)SCREEN_H);
+  uint8_t top = (baseline >= above) ? (uint8_t)(baseline - above) : 0;
+  uint8_t bottom = (uint8_t)min((int)baseline + below, (int)SCREEN_H);
 
   u8g2.setClipWindow(0, top, boxW + 2, bottom);
   u8g2.drawUTF8(2 - offset, baseline, text);
@@ -520,6 +537,16 @@ static uint16_t nextCodepoint(const char *&p) {
   return s[0];
 }
 
+/* A zero-width space. The PC puts one at every Thai word boundary, which
+   it can find with a dictionary and the board cannot (server/catsole/
+   thai.py). It is a place a row may end, and is never drawn. */
+static const uint16_t WORD_BREAK = 0x200B;
+
+/* Whether the line being laid out carries word breaks. When it does, they
+   are the only places a Thai phrase is split; the syllable guesses below
+   are left for a single word too wide for a row. */
+static bool wordBreaksKnown = false;
+
 /* Vowels above and below the letter, and the tone marks. */
 static bool isThaiMark(uint16_t c) {
   return c == 0x0E31 || (c >= 0x0E34 && c <= 0x0E3A) ||
@@ -542,6 +569,7 @@ static uint16_t textWidth(const char *s) {
   uint16_t w = 0;
   while (*s) {
     uint16_t c = nextCodepoint(s);
+    if (c == WORD_BREAK) continue;
     /* The C++ wrapper in U8g2 2.35.30 has no getGlyphWidth, but the
        C function behind it does, and the handle is public. */
     if (!isThaiMark(c)) {
@@ -561,6 +589,9 @@ static void drawText(int16_t x, int16_t y, const char *s) {
   int16_t cell = x;
   while (*s) {
     uint16_t c = nextCodepoint(s);
+    /* Skipped outright: as a glyph it would move the cell the next mark
+       stacks on. */
+    if (c == WORD_BREAK) continue;
     if (isThaiMark(c)) {
       u8g2.drawGlyph(cell, y, c);
     } else {
@@ -597,10 +628,22 @@ static bool canBreakBefore(const char *word, uint16_t i) {
   return true;
 }
 
+/* Whether byte i of a word sits on a marked word break: just before one,
+   or just after. */
+static bool atWordBreak(const char *word, uint16_t i) {
+  const char *here = word + i;
+  if (nextCodepoint(here) == WORD_BREAK) return true;
+  return i >= 3 && (uint8_t)word[i - 3] == 0xE2 &&
+         (uint8_t)word[i - 2] == 0x80 && (uint8_t)word[i - 1] == 0x8B;
+}
+
 /* Whether byte i of a word is certainly a syllable edge: before a vowel
    written ahead of its letter, or after one that closes a syllable. A
-   break anywhere else may land mid-syllable. */
+   break anywhere else may land mid-syllable. With word breaks marked,
+   only those count: a syllable edge inside a word is still inside it, and
+   "after sara aa" is not even that in a word like "ngaan". */
 static bool isSyllableEdge(const char *word, uint16_t i) {
+  if (wordBreaksKnown) return atWordBreak(word, i);
   const char *here = word + i;
   uint16_t next = nextCodepoint(here);
   if (next >= 0x0E40 && next <= 0x0E44) return true;
@@ -631,7 +674,10 @@ static uint16_t fitPrefix(char *line, uint16_t lineLen, const char *word,
     if (i == wordLen || isSyllableEdge(word, i)) fitEdge = i;
   }
   line[lineLen] = 0;
-  return (edgesOnly || fitEdge * 2 >= fit) ? fitEdge : fit;
+  /* A marked word break beats a split word however short it leaves the
+     row; a guessed edge only when it keeps half the fill. */
+  bool takeEdge = edgesOnly || fitEdge * 2 >= fit || (wordBreaksKnown && fitEdge);
+  return takeEdge ? fitEdge : fit;
 }
 
 /* ---- text wrapping --------------------------------------------------
@@ -755,16 +801,86 @@ static const uint8_t LATIN_STYLE_FIRST = 0;
 static const uint8_t THAI_STYLE_FIRST = 3;
 static const uint8_t MAIN_STYLE_COUNT = 6;
 
-/* How long each page of a paged line stays up. Split from the line's own
-   hold where the PC sent one, so the pages keep pace with the singing. */
-static const uint16_t PAGE_MIN_MS = 1200;
-static const uint16_t PAGE_MAX_MS = 3500;
+/* How a paged line's time is shared out. Each page gets a share of the
+   line's hold in proportion to the letters on it, since a page with twice
+   the words takes about twice as long to sing. Splitting evenly with a
+   minimum per page ran past the end of short lines, so their last page
+   was never seen. A page still gets a readable floor where the line is
+   long enough to afford one, and each page after the first starts a
+   little early, so it has slid into place by its first word. */
+static const uint16_t PAGE_MAX_MS = 3500;   /* average per page, at most */
+static const uint16_t PAGE_FLOOR_MS = 900;
+static const uint16_t PAGE_SLIDE_MS = 220;
 static const uint16_t PAGE_OPEN_MS = 2500;  /* no hold: cycle at this rate */
 
 /* The band between the rule and the equalizer row. */
 static const uint8_t BAND_TOP = 14;
 static const uint8_t BAND_BOTTOM = 50;
 
+
+/* Letters on a row: what is read and sung. Marks ride on their letter,
+   and spaces and word breaks are not read at all. */
+static uint8_t rowWeight(const char *row) {
+  uint8_t n = 0;
+  while (*row) {
+    uint16_t c = nextCodepoint(row);
+    if (c != ' ' && c != WORD_BREAK && !isThaiMark(c) && n < 255) n++;
+  }
+  return n;
+}
+
+/* Work out when each page of a finished layout comes up. */
+static void schedulePages(WrappedText &w) {
+  uint8_t per = MAIN_STYLES[w.styleIndex].pageLines;
+  uint8_t pages = (w.count + per - 1) / per;
+  w.pageAt[0] = 0;
+  if (pages <= 1) return;
+
+  uint16_t weight[MAX_WRAP_LINES];
+  uint32_t total = 0;
+  for (uint8_t p = 0; p < pages; p++) {
+    weight[p] = 0;
+    for (uint8_t r = p * per; r < (p + 1) * per && r < w.count; r++) {
+      weight[p] += w.weight[r];
+    }
+    total += weight[p];
+  }
+
+  uint32_t span = w.holdMs;
+  if (span > (uint32_t)pages * PAGE_MAX_MS) span = (uint32_t)pages * PAGE_MAX_MS;
+  uint32_t share[MAX_WRAP_LINES];
+  for (uint8_t p = 0; p < pages; p++) {
+    share[p] = total ? span * weight[p] / total : span / pages;
+  }
+
+  /* Lift any page below the floor to it, taking the difference from the
+     pages above it in proportion to how far above they are. */
+  uint32_t floorMs = span / pages;
+  if (floorMs > PAGE_FLOOR_MS) floorMs = PAGE_FLOOR_MS;
+  uint32_t deficit = 0, pool = 0;
+  for (uint8_t p = 0; p < pages; p++) {
+    if (share[p] < floorMs) deficit += floorMs - share[p];
+    else pool += share[p] - floorMs;
+  }
+  if (deficit && pool) {
+    for (uint8_t p = 0; p < pages; p++) {
+      share[p] = share[p] <= floorMs
+                     ? floorMs
+                     : share[p] - (uint32_t)((uint64_t)deficit *
+                                             (share[p] - floorMs) / pool);
+    }
+  }
+
+  uint32_t t = share[0];
+  for (uint8_t p = 1; p < pages; p++) {
+    uint32_t lead = share[p - 1] / 4;
+    if (lead > PAGE_SLIDE_MS) lead = PAGE_SLIDE_MS;
+    uint32_t at = t > lead ? t - lead : 0;
+    if (at <= w.pageAt[p - 1]) at = w.pageAt[p - 1] + 1;
+    w.pageAt[p] = (uint16_t)(at < 65535UL ? at : 65535UL);
+    t += share[p];
+  }
+}
 
 /* Lay text out once. Call when the text changes, not when drawing. */
 static void prepareWrap(const char *text, uint8_t boxW, uint32_t holdMs,
@@ -773,6 +889,7 @@ static void prepareWrap(const char *text, uint8_t boxW, uint32_t holdMs,
   out.styleIndex = 0;
   out.holdMs = holdMs;
   if (text == NULL || text[0] == 0) return;
+  wordBreaksKnown = strstr(text, "\xE2\x80\x8B") != NULL;
 
   bool thai = hasThai(text);
   uint8_t first = thai ? THAI_STYLE_FIRST : LATIN_STYLE_FIRST;
@@ -791,7 +908,9 @@ static void prepareWrap(const char *text, uint8_t boxW, uint32_t holdMs,
   out.count = wrapCount;
   for (uint8_t i = 0; i < wrapCount && i < MAX_WRAP_LINES; i++) {
     memcpy(out.lines[i], wrapBuf[i], MAX_WRAP_CHARS);
+    out.weight[i] = rowWeight(out.lines[i]);
   }
+  schedulePages(out);
 }
 
 /* Which page of a layout is showing, sinceMs after the line arrived.
@@ -804,11 +923,9 @@ static uint8_t currentPage(const WrappedText &wrapped, uint32_t sinceMs) {
 
   if (wrapped.holdMs == 0) return (uint8_t)((sinceMs / PAGE_OPEN_MS) % pages);
 
-  uint32_t pageMs = wrapped.holdMs / pages;
-  if (pageMs < PAGE_MIN_MS) pageMs = PAGE_MIN_MS;
-  if (pageMs > PAGE_MAX_MS) pageMs = PAGE_MAX_MS;
-  uint32_t page = sinceMs / pageMs;
-  return (uint8_t)(page < pages ? page : pages - 1);
+  uint8_t page = 0;
+  while (page + 1 < pages && sinceMs >= wrapped.pageAt[page + 1]) page++;
+  return page;
 }
 
 /* Draws one page of a prepared layout, vertically centred. yShift moves
@@ -931,17 +1048,65 @@ static void drawEqualizer(bool active) {
  * Frames arrive four times a second, which would make this step visibly.
  * Playback advances in real time, so the position is carried forward
  * locally between frames and corrected whenever a new one lands. */
-static void drawProgress() {
-  if (frame.durMs == 0) return;
-
+/* Where playback is now: the last reported position, moved on by the time
+   since unless paused, so it runs smoothly between frames. */
+static uint32_t playbackPosition() {
   uint32_t pos = frame.posMs;
   if (strcmp(frame.state, "playing") == 0) {
     pos += (millis() - frame.receivedAtMs);
   }
-  if (pos > frame.durMs) pos = frame.durMs;
+  if (frame.durMs && pos > frame.durMs) pos = frame.durMs;
+  return pos;
+}
 
+static void drawProgress() {
+  if (frame.durMs == 0) return;
+  uint32_t pos = playbackPosition();
   uint8_t w = (uint8_t)(((uint64_t)pos * (SCREEN_W - 4)) / frame.durMs);
   if (w > 0) u8g2.drawBox(2, RULE_Y + 2, w, 2);
+}
+
+/* m:ss, or h:mm:ss for anything an hour or longer. */
+static void fmtClock(char *out, size_t n, uint32_t ms) {
+  unsigned long s = ms / 1000UL;
+  if (s >= 3600UL) {
+    snprintf(out, n, "%lu:%02lu:%02lu", s / 3600UL, (s / 60UL) % 60UL, s % 60UL);
+  } else {
+    snprintf(out, n, "%lu:%02lu", s / 60UL, s % 60UL);
+  }
+}
+
+/* A show in place of a song: its name, or the Netflix name when that is
+   all the PC knows, and how far through it is. Brave passes on only the
+   page's title, which for Netflix's player is just "Netflix", so the
+   wordmark is the usual case. */
+static void drawVideoCard() {
+  const uint8_t boxW = CAT_PERCH_X - 6;
+  if (frame.mainText[0] == 0) {
+    u8g2.setFont(u8g2_font_helvB10_tf);
+    u8g2.drawStr(2, 30, "NETFLIX");
+  } else if (hasThai(frame.mainText)) {
+    u8g2.setFont(u8g2_font_etl14thai_t);
+    u8g2.setClipWindow(0, BAND_TOP, boxW + 2, BAND_BOTTOM);
+    drawText(2, 30, frame.mainText);
+    u8g2.setMaxClipWindow();
+  } else {
+    u8g2.setFont(u8g2_font_helvB10_tf);
+    drawMarquee(frame.mainText, 30, boxW, 12, 3);
+  }
+
+  char elapsed[12], total[12], line[28];
+  fmtClock(elapsed, sizeof(elapsed), playbackPosition());
+  if (frame.durMs) {
+    fmtClock(total, sizeof(total), frame.durMs);
+    snprintf(line, sizeof(line), "%s / %s", elapsed, total);
+  } else {
+    snprintf(line, sizeof(line), "%s", elapsed);
+  }
+  /* An hour-long film runs to h:mm:ss twice, too wide at 6x12. */
+  u8g2.setFont(u8g2_font_6x12_tf);
+  if (u8g2.getStrWidth(line) > boxW) u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawStr(2, 45, line);
 }
 
 static void drawLyrics() {
@@ -951,6 +1116,7 @@ static void drawLyrics() {
   drawProgress();
 
   bool idle = strcmp(frame.state, "idle") == 0;
+  bool video = strcmp(frame.lyr, "video") == 0;
 
   if (idle) {
     /* Nothing to show, so the mascot gets the space. */
@@ -958,6 +1124,14 @@ static void drawLyrics() {
     u8g2.setFont(u8g2_font_5x7_tf);
     u8g2.drawUTF8(56, 34, "nothing");
     u8g2.drawUTF8(56, 44, "playing");
+  } else if (video) {
+    /* Drop the last song's layout, so the next song slides in on its own
+       rather than chasing out a line from before the show. */
+    if (wrapDirty) {
+      wrapCurrent.count = 0;
+      wrapDirty = false;
+    }
+    drawVideoCard();
   } else if (frame.mainText[0] != 0) {
     /* Rebuild the layout only when the line actually changed. The outgoing
        line's layout is already finished, so it is copied rather than
@@ -970,6 +1144,8 @@ static void drawLyrics() {
       prepareWrap(frame.mainText, CAT_PERCH_X - 6, frame.holdMs, wrapCurrent);
       wrapShownMs = transitionStartMs;
       wrapDirty = false;
+      wrapPageShown = 0;
+      pageSlideStartMs = 0;
     }
 
     uint32_t since = millis() - transitionStartMs;
@@ -987,8 +1163,27 @@ static void drawLyrics() {
       drawWrapped(wrapCurrent, (int16_t)((1.0f - eased) * travel), 0);
       u8g2.setMaxClipWindow();
     } else {
-      drawWrapped(wrapCurrent, 0, currentPage(wrapCurrent, since));
-
+      /* Turning a page slides it up and out as the next comes in beneath,
+         the same motion as a new line, only quicker. */
+      uint8_t page = currentPage(wrapCurrent, since);
+      if (page != wrapPageShown) {
+        wrapPageFrom = wrapPageShown;
+        wrapPageShown = page;
+        pageSlideStartMs = millis();
+      }
+      uint32_t turning = millis() - pageSlideStartMs;
+      if (turning < PAGE_SLIDE_MS) {
+        float p = (float)turning / (float)PAGE_SLIDE_MS;
+        float q = 1.0f - p;
+        float eased = 1.0f - (q * q * q);
+        int16_t travel = (int16_t)(BAND_BOTTOM - BAND_TOP);
+        u8g2.setClipWindow(0, BAND_TOP, SCREEN_W, BAND_BOTTOM);
+        drawWrapped(wrapCurrent, (int16_t)(-eased * travel), wrapPageFrom);
+        drawWrapped(wrapCurrent, (int16_t)((1.0f - eased) * travel), page);
+        u8g2.setMaxClipWindow();
+      } else {
+        drawWrapped(wrapCurrent, 0, page);
+      }
     }
 
     /* A Thai line is 17px tall, so even one leaves no room for a label
@@ -1021,7 +1216,8 @@ static void drawLyrics() {
    * to shape it into a dip that lands on the beat. */
   bool liveEq = (millis() - lastEqMs) < EQ_FRESH_MS;
   float lift_f = 0.0f;
-  if (playing && liveEq) {
+  /* A show's soundtrack is mostly talk, so the cat sits and watches. */
+  if (playing && liveEq && !video) {
     /* Advance the local phase on this frame's own elapsed time, then
        ease it toward what the PC reports. Easing rather than snapping is
        what keeps the arc continuous: the cat completes every rise and
@@ -1064,7 +1260,8 @@ static void drawLyrics() {
     u8g2.setDrawColor(1);
 
     /* Eyes widen on the landing, which reads as reacting to the beat. */
-    uint8_t pose = (playing && liveEq && lift_f < 0.25f)
+    uint8_t pose = video ? catPose(false, false)
+                   : (playing && liveEq && lift_f < 0.25f)
                        ? CAT_HAPPY
                        : catPose(playing, false);
     drawCat(CAT_PERCH_X, 55 - lift, pose, u8g2_font_4x6_tf, 7);
