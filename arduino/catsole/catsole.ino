@@ -1239,6 +1239,12 @@ static void drawLyrics() {
       catPhase += err * 0.07f;
       if (catPhase < 0.0f) catPhase += 1.0f;
       if (catPhase >= 1.0f) catPhase -= 1.0f;
+    } else if (catPhase > 0.0f) {
+      /* No beat: the PC withholds it until it is sure, and while finding
+         it again after a pause. Finish this bob rather than hang in the
+         air, then rest until the beat comes back. */
+      catPhase += dt * 2.0f;
+      if (catPhase >= 1.0f) catPhase = 0.0f;
     }
 
     /* Lowest on the beat, rising between: a head-bob dips on the beat
