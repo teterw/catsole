@@ -11,6 +11,7 @@ showing no line, so an uncertain match degrades rather than guesses.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import logging
 import re
@@ -28,8 +29,11 @@ REQUEST_TIMEOUT = 6.0
 # How long the last line of a track stays on screen once nothing follows it.
 TRAILING_HOLD_MS = 5000
 
-# A duration this far from the reported track length is a different edit.
-DURATION_TOLERANCE_S = 3.0
+# A match further than this from the track's reported length is taken to be
+# a different track. A video's intro or another edit lands inside it; a
+# different song, or a 24-minute episode that happened to share a title
+# with one, does not.
+MATCH_WINDOW_S = 15.0
 
 _TIMESTAMP = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 _UNSAFE = re.compile(r"[^a-z0-9]+")
@@ -113,7 +117,9 @@ def pick_best(results: list[dict], duration_s: float | None) -> dict | None:
     """Choose the best lrclib result, preferring synced and matching length.
 
     Search returns every edit, remaster and live version under one title, so
-    duration is the only reliable discriminator available.
+    duration is the only reliable discriminator available. Nothing further
+    than MATCH_WINDOW_S from the track is accepted: another song's words
+    are worse than none.
     """
     if not results:
         return None
@@ -126,26 +132,36 @@ def pick_best(results: list[dict], duration_s: float | None) -> dict | None:
             return float("inf")
         return abs(float(entry_duration) - float(duration_s))
 
-    synced = [entry for entry in results if entry.get("syncedLyrics")]
-    if synced:
-        best = min(synced, key=distance)
-        if duration_s is None or distance(best) <= DURATION_TOLERANCE_S:
-            return best
-        # Nothing close enough: a synced file for the wrong edit drifts badly.
-        return best if distance(best) != float("inf") else None
-
-    plain = [entry for entry in results if entry.get("plainLyrics")]
-    if plain:
-        return min(plain, key=distance)
-
+    for field_name in ("syncedLyrics", "plainLyrics"):
+        candidates = [entry for entry in results if entry.get(field_name)]
+        if candidates:
+            best = min(candidates, key=distance)
+            if distance(best) <= MATCH_WINDOW_S:
+                return best
     return None
 
 
 def cache_key(artist: str, title: str) -> str:
-    """Stable, case-insensitive, filesystem-safe cache filename stem."""
+    """Stable, case-insensitive, filesystem-safe cache filename stem.
+
+    Folding to ASCII keeps keys readable, but it erases any script with no
+    ASCII form. Thai vanished entirely, so every Thai-titled song by one
+    artist shared a single file, and a fully Thai track shared "unknown"
+    with every other. When folding drops more than accents, a digest of the
+    original is appended to keep the key unique. Keys that fold cleanly are
+    unchanged, so entries already cached still resolve.
+    """
     raw = f"{artist}__{title}"
-    folded = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode()
-    return _UNSAFE.sub("-", folded.lower()).strip("-") or "unknown"
+    decomposed = unicodedata.normalize("NFKD", raw)
+    folded = decomposed.encode("ascii", "ignore").decode()
+    slug = _UNSAFE.sub("-", folded.lower()).strip("-")
+    lossy = any(
+        ord(char) > 127 and not unicodedata.combining(char) for char in decomposed
+    )
+    if lossy or not slug:
+        digest = hashlib.sha1(raw.casefold().encode("utf-8")).hexdigest()[:10]
+        slug = f"{slug}-{digest}" if slug else digest
+    return slug
 
 
 class LyricsProvider:

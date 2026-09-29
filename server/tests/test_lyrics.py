@@ -150,3 +150,52 @@ def test_provider_survives_a_corrupt_cache_file(tmp_path):
     path = tmp_path / (cache_key("artist", "title") + ".json")
     path.write_text("{ not json", encoding="utf-8")
     assert provider._read_cache("artist", "title") is None
+
+
+def test_cache_key_keeps_thai_titles_apart():
+    # Folding to ASCII used to erase Thai entirely, so every Thai-titled song
+    # by one artist shared a cache file and showed whichever was fetched first.
+    assert cache_key("An Artist", "ทดสอบ") != cache_key("An Artist", "ข้อความ")
+
+
+def test_cache_key_keeps_all_thai_tracks_apart():
+    # With nothing left after folding, every such track became "unknown".
+    first = cache_key("ศิลปิน", "ทดสอบ")
+    second = cache_key("ศิลปิน", "ข้อความ")
+    assert first != second
+    assert "unknown" not in (first, second)
+
+
+def test_cache_key_is_case_insensitive_with_thai_in_it():
+    assert cache_key("An Artist", "ทดสอบ Remix") == cache_key("AN ARTIST", "ทดสอบ remix")
+
+
+def test_cache_key_leaves_plain_latin_keys_unchanged():
+    # Entries already cached for Latin titles must keep resolving.
+    assert cache_key("An Artist", "A Title") == "an-artist-a-title"
+    assert cache_key("Beyoncé", "Halo") == "beyonce-halo"
+
+
+def test_pick_best_rejects_synced_lyrics_for_a_different_length():
+    # A 24-minute episode reported only as "Netflix" matched a 3-minute song.
+    results = [{"syncedLyrics": "[00:01.00]x", "duration": 190}]
+    assert pick_best(results, 1434) is None
+
+
+def test_pick_best_rejects_plain_lyrics_for_a_different_length():
+    results = [{"plainLyrics": "text", "duration": 190}]
+    assert pick_best(results, 1434) is None
+
+
+def test_pick_best_still_accepts_a_nearby_edit():
+    # A music video's intro can put it a few seconds off the album cut.
+    results = [{"syncedLyrics": "[00:01.00]x", "duration": 200}]
+    assert pick_best(results, 209) is results[0]
+
+
+def test_pick_best_falls_back_to_plain_when_synced_is_the_wrong_length():
+    results = [
+        {"syncedLyrics": "[00:01.00]x", "duration": 400},
+        {"plainLyrics": "text", "duration": 201},
+    ]
+    assert pick_best(results, 200) is results[1]
