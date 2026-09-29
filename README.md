@@ -131,7 +131,8 @@ off, and a new line slides in as the old one slides out. The mascot perches
 at the right, bobbing on the beat.
 
 Thai lyrics are shown in Thai, not swapped for the title card. See
-[Thai lyrics](#thai-lyrics) below.
+[Thai lyrics](#thai-lyrics) below. A Netflix show gets a card of its own
+instead of lyrics; see [Netflix](#netflix).
 
 **Stats** — CPU clock, temperature and load; GPU temperature, load and VRAM;
 and system RAM, as three rows with usage bars. Fan speed sits in the header
@@ -205,17 +206,27 @@ draws each mark at the previous letter's position without advancing, as a
 Thai typewriter would have, so marks stack on their letters rather than
 sitting in cells of their own.
 
-Thai puts no spaces between words, so wrapping cannot wait for one. A phrase
-that does not fit is split inside itself, preferring a place that is
-certainly a syllable edge: before เ แ โ ใ ไ, or after ะ า ำ ๆ. A break never
-separates a letter from its marks. Without a dictionary a break can still
-land mid-word now and then, but it never tears a character apart.
+Thai puts no spaces between words, so wrapping cannot wait for one, and the
+board has no room for a dictionary. The PC does: it finds the word boundaries
+with PyThaiNLP and marks each with a zero-width space, which the firmware
+treats as a place a row may end and never draws. Rows break only there, so a
+word is split only when it is wider than a whole row by itself. Across 3,255
+cached lyric lines that leaves one line in 800 with a split word, against one
+in three when the firmware guessed at syllable edges on its own (before
+เ แ โ ใ ไ, or after ะ า ำ ๆ, and "after า" is no edge at all in a word like
+งาน). Without PyThaiNLP installed it falls back to that guessing. Either way a
+break never separates a letter from its marks.
 
 Thai needs 17px a line even at 14px, since marks stack above and below, so
-the band holds two lines. A longer line pages through two rows at a time,
-splitting the line's own duration (`hold_ms`) between the pages. The split is
-even, which only roughly keeps pace with the singing - see
-[Known issues](#known-issues). Title cards have no duration and cycle instead.
+the band holds two lines. A longer line pages through two rows at a time. The
+line's own duration (`hold_ms`) is shared between its pages by how many
+letters each carries, since a page with twice the words takes about twice as
+long to sing. Each page gets at least 0.9s where the line is long enough to
+allow it, and each page after the first comes up a little early, so it has
+slid into place by its first word. Splitting evenly with a 1.2s minimum, as
+before, ran past the end of short lines and left their last page unseen. A
+page turn slides up the way a new line does, only quicker. Title cards have
+no duration and cycle instead.
 
 Only the main line gets Thai. The artist and title strip along the top is
 7px tall, too short for any Thai face, so Thai there is dropped as it always
@@ -239,6 +250,38 @@ streams routinely report none.
 
 Tune `min_duration_s`, `allow_apps`, `block_apps` and `require_artist` in
 `server/config.json`.
+
+### When another tab takes over
+
+Brave publishes one media session for the whole browser, and its title
+follows whichever tab is active. A trailer autoplaying or a reel scrolled past
+in another tab replaces the song in it outright. The service log had 251 such
+interruptions, half of them over within 3.4 seconds, and each one used to
+blank the lyrics, look the song up again on its return and restart the beat
+tracking.
+
+So a playing song is held for up to 15 seconds against nothing, against
+something not worth showing, and against a paused tab surfacing: a paused tab
+cannot be what is making the sound. Its position keeps moving while held, and
+when it comes back nothing is looked up again and the beat is not reset.
+Anything else that is actually playing takes over at once, since a skip to
+the next song looks exactly the same.
+
+### Netflix
+
+A show gets a card instead of lyrics: its name, and how far through it you
+are against its length, with the cat sitting and watching rather than bobbing
+along to dialogue.
+
+Brave, like Chrome, reports only the tab's title for a site that publishes no
+media metadata, and Netflix publishes none: its player page is titled just
+"Netflix", with no artist. So the show's name is usually unknown, and the card
+shows the Netflix wordmark in its place; where a session does carry a real
+title, as the Netflix app's may, the card uses it. Before the card existed,
+the lyric search took "Netflix" for a song title and found a rap song for it.
+
+Netflix's browse pages ("Home - Netflix" and the like) autoplay trailers, so
+they are ignored altogether.
 
 ## When the PC goes away
 
@@ -328,32 +371,35 @@ answers:
 ```
 
 `hold_ms` tells the device how long the current lyric line stays up, which
-is what a paged Thai line divides between its pages. Device-bound text is
-folded to ASCII on the PC, because the OLED fonts do not carry the full
-Unicode range. The exception is Thai in `main`, which goes as raw UTF-8
-rather than `\u` escapes: three bytes a character on the wire, not six.
+is what a paged Thai line shares out between its pages. `lyr` says what
+`main` holds: a `synced` line, or a title card because lyrics are `plain`,
+`none`, or in a `script` the display has no font for; `video` means a show,
+so the device draws the time instead. Device-bound text is folded to ASCII
+on the PC, because the OLED fonts do not carry the full Unicode range. The
+exception is Thai in `main`, which goes as raw UTF-8 rather than `\u`
+escapes, three bytes a character on the wire, not six, with a zero-width
+space (U+200B) at each word boundary.
 
 ## Known issues
 
 Things that work but are not right yet.
 
-**Thai lyric timing is off.** A Thai line too long for two rows pages through
-it, and the pages currently split the line's `hold_ms` evenly. Syllables are
-not spread evenly through a sung line, so the second page tends to arrive late
-and linger. It needs weighting by page length at least, and the ETL faces cost
-enough draw time per frame that some of the drift may be render lag rather
-than the split.
+**Netflix shows no show name.** Brave reports only the page title, which is
+"Netflix", so the card shows the Netflix wordmark instead. Getting the name
+would mean reading the page itself.
 
-**Words still get cut.** Thai wrapping has no dictionary, so it breaks at the
-places that are certainly safe (before the leading vowels, after the trailing
-ones) and guesses in between. A guess lands mid-word often enough to notice.
-The Latin path can clip the last glyph on a line too, since the width estimate
-and the clip window are computed separately.
+**A Thai word wider than a row still splits.** Rows break only between words,
+so a single word of more than twelve letters (กลืนน้ำลายตัวเอง, say) has
+nowhere else to go and is split by the old syllable guessing. In the cached
+lyrics that is about one line in 800.
 
-**Animation needs another pass.** The lyric slide does not run between pages of
-the same Thai line, only between lines, so a paged line changes in a jump. The
-cat's bob also drifts for a bar or two after a tempo change before the grid
-settles again.
+**A playing tab still takes over.** The hold covers nothing, clips, trailers
+and paused tabs. Something else that is actually playing replaces the song at
+once, because a skip to the next track looks exactly the same. And a song
+that really was closed stays up for as long as the hold, 15 seconds at most.
+
+**The cat takes a bar or two to find each new song's beat.** The tempo has to
+be measured before the bob can follow it.
 
 ## Troubleshooting
 
@@ -365,10 +411,11 @@ poor image, not no image.
 bus is running faster than the wiring can carry. Lower `DISPLAY_BUS_HZ`.
 
 **Lyrics mode shows the title instead of lyrics.** No synced lyrics exist for
-that track on lrclib, or the track's reported duration is too far from any
-match. The control panel shows which of those it is. A line in a script the
-display has no font for (Chinese, Japanese, Korean and so on) also falls back
-to the title card. Thai is the exception, and is drawn as is.
+that track on lrclib, or the track's reported duration is more than 15
+seconds from any match, which is taken to be a different track. The control
+panel shows which of those it is. A line in a script the display has no font
+for (Chinese, Japanese, Korean and so on) also falls back to the title card.
+Thai is the exception, and is drawn as is.
 
 **Lyrics run early or late.** Set `lyric_offset_ms` in `server/config.json`,
 or pass `--offset-ms`. Positive pushes later. Different players report
