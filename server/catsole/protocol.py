@@ -43,6 +43,10 @@ THAI_FIELDS = frozenset({"main"})
 _THAI_FIRST = 0x0E01
 _THAI_LAST = 0x0E5B
 
+# A zero-width space, marking where one Thai word ends and the next begins.
+# The firmware breaks rows there and draws nothing for it. See thai.py.
+WORD_BREAK = "\u200b"
+
 
 def is_thai(char: str) -> bool:
     return _THAI_FIRST <= ord(char) <= _THAI_LAST
@@ -71,8 +75,9 @@ def fold_text(text: str) -> str:
     """Like fold_ascii, but Thai passes through untouched.
 
     Thai is never decomposed: NFKD would split sara am into nikhahit and
-    sara aa, which the device font draws as two separate cells. Runs of
-    everything else are folded exactly as fold_ascii would fold them.
+    sara aa, which the device font draws as two separate cells. The word
+    breaks marked between Thai words survive too. Runs of everything else
+    are folded exactly as fold_ascii would fold them.
     """
     if not text:
         return ""
@@ -90,7 +95,7 @@ def fold_text(text: str) -> str:
             run.clear()
 
     for char in text:
-        if is_thai(char):
+        if is_thai(char) or char == WORD_BREAK:
             flush()
             out.append(char)
         else:

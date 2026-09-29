@@ -98,3 +98,19 @@ def test_decode_line_rejects_non_objects():
 
 def test_decode_roundtrip():
     assert decode_line(encode_frame({"t": "tap"}).decode()) == {"t": "tap"}
+
+
+def test_fold_text_keeps_word_breaks_between_thai_words():
+    # The firmware wraps Thai at these; folding them away would put it back
+    # to guessing where words end.
+    marked = "ทดสอบ\u200bข้อความ"
+    assert fold_text(marked) == marked
+
+
+def test_word_breaks_survive_encoding():
+    out = encode_frame({"t": "frame", "main": "ทดสอบ\u200bข้อความ"})
+    assert decode_line(out.decode("utf-8"))["main"] == "ทดสอบ\u200bข้อความ"
+
+
+def test_a_stray_word_break_in_latin_text_is_still_dropped():
+    assert fold_text("one\u200btwo") == "onetwo"

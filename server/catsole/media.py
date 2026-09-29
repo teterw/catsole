@@ -134,6 +134,33 @@ def is_music(
     return True
 
 
+def netflix_kind(now_playing: "NowPlaying | None") -> str | None:
+    """Whether a session is Netflix: "watch", "browse", or None if not.
+
+    A browser reports only the tab's title for a site that publishes no
+    media metadata, and Netflix publishes none: its player page is titled
+    "Netflix" and nothing more, with no artist. Its browse pages ("Home -
+    Netflix" and so on) autoplay trailers, which nobody is watching. The
+    Netflix app is recognised by its id instead.
+    """
+    if now_playing is None:
+        return None
+    title = now_playing.title.strip().casefold()
+    in_app = "netflix" in (now_playing.app_id or "").casefold()
+    untagged = not now_playing.artist.strip()
+    if title.endswith((" - netflix", " | netflix")) and (in_app or untagged):
+        return "browse"
+    if in_app or (untagged and title == "netflix"):
+        return "watch"
+    return None
+
+
+def netflix_show(now_playing: "NowPlaying") -> str:
+    """The show's name, or "" when the session says only "Netflix"."""
+    title = now_playing.title.strip()
+    return "" if title.casefold() == "netflix" else title
+
+
 class MediaReader:
     """Polls the current SMTC session.
 

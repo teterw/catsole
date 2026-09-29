@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from catsole import app as app_module
 from catsole.app import MODES, DeskConsole
 from catsole.config import Config
 from catsole.link import NullLink
@@ -320,3 +321,158 @@ def test_clock_rests_longer_than_the_others(console):
 
 def test_unknown_screen_falls_back_to_the_default_dwell(console):
     assert console._hold_for("nonesuch") == console.config.idle_rotate_s
+
+
+# ---- lookups that must not be lost ------------------------------------
+
+class TrackChangesMidFetch:
+    """A provider during whose first lookup the next track starts."""
+
+    def __init__(self, console, next_track):
+        self.console = console
+        self.next_track = next_track
+        self.calls = []
+
+    def fetch(self, artist, title, album="", duration_s=None):
+        self.calls.append(title)
+        if len(self.calls) == 1:
+            self.console._on_media(self.next_track)
+        return Lyrics(kind="synced", synced=[(0, f"a line of {title}")])
+
+
+def playing_song(title="One", position_ms=30_000, playing=True):
+    return NowPlaying(
+        artist="An Artist", title=title, duration_ms=210_000,
+        position_ms=position_ms, is_playing=playing,
+    )
+
+
+def test_a_track_change_during_a_lookup_still_looks_up_the_new_track(console):
+    # The in-flight guard used to skip the new track's lookup outright, and
+    # the old result was then discarded: the song ran with no lyrics at all.
+    provider = TrackChangesMidFetch(console, playing_song("Two"))
+    console.lyrics_provider = provider
+    console._on_media(playing_song("One"))
+    assert provider.calls == ["One", "Two"]
+    assert console.lyrics.synced == [(0, "a line of Two")]
+
+
+# ---- Netflix ------------------------------------------------------------
+
+def netflix(**kw):
+    # What Brave reports for Netflix's player: the tab title, nothing else.
+    base = dict(
+        artist="", title="Netflix", duration_ms=1_434_000,
+        position_ms=1_113_000, is_playing=True, app_id="Brave",
+    )
+    base.update(kw)
+    return NowPlaying(**base)
+
+
+def test_netflix_gets_a_video_card_instead_of_lyrics(console):
+    console._on_media(netflix())
+    assert console.lyrics_provider.calls == []
+    frame = console.build_frame()
+    assert frame["lyr"] == "video"
+    assert frame["meta"] == "Netflix"
+    assert frame["main"] == ""
+    assert frame["pos"] == 1_113_000
+    assert frame["dur"] == 1_434_000
+    assert frame["state"] == "playing"
+
+
+def test_netflix_card_names_the_show_when_the_session_does(console):
+    console._on_media(netflix(title="A Show", app_id="4DF9E0F8.Netflix_mcm4njqhnhss8!Netflix.App"))
+    assert console.build_frame()["main"] == "A Show"
+
+
+def test_netflix_trailers_on_the_browse_page_are_ignored(console):
+    console._on_media(netflix(title="Home - Netflix", duration_ms=90_000))
+    assert console.now_playing is None
+    assert console.lyrics_provider.calls == []
+
+
+def test_netflix_is_shown_even_when_an_artist_is_required(console):
+    console.config.require_artist = True
+    console._on_media(netflix())
+    assert console.now_playing is not None
+
+
+# ---- another tab taking the session for a moment -------------------------
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: now[0])
+    return now
+
+
+def test_a_reel_taking_the_session_does_not_drop_the_song(console, clock):
+    console._on_media(playing_song())
+    console._on_media(NowPlaying(artist="", title="a clip", duration_ms=15_000, is_playing=True))
+    assert console.now_playing.title == "One"
+
+
+def test_a_trailer_taking_the_session_does_not_drop_the_song(console, clock):
+    console._on_media(playing_song())
+    console._on_media(netflix(title="Home - Netflix", duration_ms=90_000))
+    assert console.now_playing.title == "One"
+
+
+def test_a_paused_tab_surfacing_does_not_replace_a_playing_song(console, clock):
+    # A paused video cannot be what is making the sound.
+    console._on_media(playing_song())
+    paused = NowPlaying(artist="A Channel", title="A Video", duration_ms=600_000, is_playing=False)
+    console._on_media(paused)
+    assert console.now_playing.title == "One"
+
+
+def test_the_held_song_keeps_its_place(console, clock):
+    console._on_media(playing_song(position_ms=30_000))
+    clock[0] += 4
+    console._on_media(None)
+    assert console.now_playing.position_ms == 34_000
+
+
+def test_the_song_coming_back_costs_no_second_lookup(console, clock):
+    console._on_media(playing_song())
+    console._on_media(None)
+    console._on_media(playing_song(position_ms=31_000))
+    assert console.lyrics_provider.calls == [("An Artist", "One")]
+    assert console.now_playing.position_ms == 31_000
+
+
+def test_a_new_playing_track_takes_over_at_once(console, clock):
+    console._on_media(playing_song("One"))
+    console._on_media(playing_song("Two"))
+    assert console.now_playing.title == "Two"
+
+
+def test_the_hold_runs_out(console, clock):
+    console._on_media(playing_song())
+    clock[0] += app_module.INTERRUPTION_HOLD_S + 1
+    console._on_media(None)
+    assert console.now_playing is None
+
+
+def test_the_hold_ends_with_the_song(console, clock):
+    console._on_media(playing_song(position_ms=208_000))
+    clock[0] += 3
+    console._on_media(None)
+    assert console.now_playing is None
+
+
+def test_a_paused_song_is_not_held(console, clock):
+    console._on_media(playing_song(playing=False))
+    console._on_media(None)
+    assert console.now_playing is None
+
+
+# ---- Thai word breaks -----------------------------------------------------
+
+def test_thai_lines_go_out_with_their_word_breaks(console):
+    pytest.importorskip("pythainlp")
+    console.mode = "lyrics"
+    console.now_playing = playing_song(position_ms=5_000)
+    console.lyrics = Lyrics(kind="synced", synced=[(1000, "ทดสอบข้อความ")])
+    assert console.build_frame()["main"] == "ทดสอบ\u200bข้อความ"

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 
 from .audio import AudioLevels
@@ -21,12 +22,19 @@ from .config import Config
 from .hardware import HardwareReader, empty_stats
 from .link import NullLink, SerialLink
 from .lyrics import Lyrics, LyricsProvider, select_line
-from .media import MediaReader, NowPlaying, is_music
+from .media import MediaReader, NowPlaying, is_music, netflix_kind, netflix_show
 from .protocol import fold_text
+from .thai import mark_word_breaks
+from .thai import warm_up as warm_up_thai
 
 log = logging.getLogger(__name__)
 
 MODES = ("lyrics", "stats", "clock")
+
+# How long a playing song outlasts something else taking the media session.
+# In the service log, half of those interruptions were over within 3.4s and
+# most within 15s; a song closed for good shows on for at most this long.
+INTERRUPTION_HOLD_S = 15.0
 
 
 def next_mode(current: str) -> str:
@@ -79,7 +87,13 @@ class DeskConsole:
         self._next_rtc = 0.0
 
         self._track_key = None
-        self._fetching = False
+        # Tracks with a lookup running. Per track, so one still running for
+        # the last song never holds up the next.
+        self._inflight: set = set()
+        # The last session worth showing, and when it was seen, so a playing
+        # song can outlast something else briefly taking the session.
+        self._last_seen: NowPlaying | None = None
+        self._last_seen_at = 0.0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._next_media = 0.0
@@ -129,37 +143,94 @@ class DeskConsole:
 
     def _on_media(self, now_playing: NowPlaying | None) -> None:
         """Record the current track, refetching lyrics only on a real change."""
+        now = time.monotonic()
+        shown = self._worth_showing(now_playing)
+
+        if self._interrupted(shown, now):
+            # Keep the song, and keep it moving, rather than dropping it for
+            # whatever surfaced in its place for a moment. Its track key is
+            # untouched, so its return costs no lookup and no beat reset.
+            self.now_playing = self._held(now)
+            return
+
+        self._last_seen = shown
+        self._last_seen_at = now
+        self.now_playing = shown
+
+        if shown is None:
+            self._track_key = None
+            self.lyrics = Lyrics(kind="none")
+            return
+
+        if shown.track_key == self._track_key:
+            return
+
+        self._track_key = shown.track_key
+        self.lyrics = Lyrics(kind="none")
+        # A new song has no reason to share the last one's pulse.
+        self.audio.reset_beat()
+        # A show has no lyrics, and searching for "Netflix" found a song.
+        if netflix_kind(shown) is None:
+            self._fetch_lyrics(shown)
+
+    def _worth_showing(self, now_playing: NowPlaying | None) -> NowPlaying | None:
+        """The session if it belongs on the display, else None."""
+        if now_playing is None or now_playing.is_empty:
+            return None
+        kind = netflix_kind(now_playing)
+        if kind == "browse":
+            return None
         # Stories, reels and other short clips share the browser's identity
         # with real music, so they are filtered on shape rather than app.
+        # A show is not music, and never comes with an artist.
         if not is_music(
             now_playing,
             min_duration_s=self.config.min_duration_s,
             allow_apps=self.config.allow_apps,
             block_apps=self.config.block_apps,
-            require_artist=self.config.require_artist,
+            require_artist=self.config.require_artist and kind is None,
         ):
-            now_playing = None
+            return None
+        return now_playing
 
-        self.now_playing = now_playing
+    def _interrupted(self, shown: NowPlaying | None, now: float) -> bool:
+        """Whether shown is only something else briefly taking the session.
 
-        if now_playing is None or now_playing.is_empty:
-            self._track_key = None
-            self.lyrics = Lyrics(kind="none")
-            return
+        Brave publishes a single media session for the whole browser, so a
+        trailer autoplaying or a reel in another tab replaces the song in it
+        outright. The song is kept while it was last seen playing, has time
+        left to run, and was seen within INTERRUPTION_HOLD_S, if what took
+        its place is nothing, is not worth showing, or is paused: a paused
+        tab surfacing cannot be what is making the sound.
+        """
+        last = self._last_seen
+        if last is None or not last.is_playing:
+            return False
+        if shown is not None and (
+            shown.track_key == last.track_key or shown.is_playing
+        ):
+            return False
+        elapsed = now - self._last_seen_at
+        if elapsed > INTERRUPTION_HOLD_S:
+            return False
+        if last.duration_ms and last.position_ms + elapsed * 1000 >= last.duration_ms:
+            return False
+        return True
 
-        if now_playing.track_key == self._track_key:
-            return
-
-        self._track_key = now_playing.track_key
-        self.lyrics = Lyrics(kind="none")
-        # A new song has no reason to share the last one's pulse.
-        self.audio.reset_beat()
-        self._fetch_lyrics(now_playing)
+    def _held(self, now: float) -> NowPlaying:
+        """The last track seen, moved on by the time since it was seen."""
+        last = self._last_seen
+        position = last.position_ms + int((now - self._last_seen_at) * 1000)
+        if last.duration_ms:
+            position = min(position, last.duration_ms)
+        return replace(last, position_ms=position)
 
     def _fetch_lyrics(self, now_playing: NowPlaying) -> None:
-        if self._fetching:
-            return
-        self._fetching = True
+        key = now_playing.track_key
+        with self._lock:
+            if key in self._inflight:
+                return
+            self._inflight.add(key)
 
         def worker():
             try:
@@ -171,7 +242,7 @@ class DeskConsole:
                 )
                 with self._lock:
                     # Guard against a track change while the fetch was in flight.
-                    if self._track_key == now_playing.track_key:
+                    if self._track_key == key:
                         self.lyrics = found
                         log.info(
                             "lyrics for %s: %s", now_playing.label, found.kind
@@ -179,7 +250,8 @@ class DeskConsole:
             except Exception:
                 log.exception("lyrics fetch failed")
             finally:
-                self._fetching = False
+                with self._lock:
+                    self._inflight.discard(key)
 
         # In tests the provider is a stub; running inline keeps them
         # deterministic without a thread join.
@@ -278,6 +350,9 @@ class DeskConsole:
 
         state = "playing" if playing.is_playing else "paused"
 
+        if netflix_kind(playing) == "watch":
+            return self._video_card(playing, state)
+
         if self.lyrics.is_synced:
             position = playing.position_ms + self.config.lyric_offset_ms
             line, hold_ms = select_line(self.lyrics.synced, position)
@@ -294,7 +369,7 @@ class DeskConsole:
                 "t": "frame",
                 "mode": "lyrics",
                 "meta": playing.label,
-                "main": line,
+                "main": mark_word_breaks(line),
                 # How long the line stays up, so a long Thai line can page
                 # through its rows in step with the singing.
                 "hold_ms": hold_ms,
@@ -309,13 +384,32 @@ class DeskConsole:
         # than a lyric line we cannot place.
         return self._title_card(playing, state, self.lyrics.kind)
 
+    def _video_card(self, playing: NowPlaying, state: str) -> dict:
+        """A show: what is on and how far through it, in place of lyrics.
+
+        Brave passes on only the tab's title, and Netflix's player page is
+        titled just "Netflix", so the show's name is usually unknown; main
+        is then empty and the device draws the Netflix name large instead.
+        """
+        return {
+            "t": "frame",
+            "mode": "lyrics",
+            "meta": "Netflix",
+            "main": mark_word_breaks(netflix_show(playing)),
+            "lyr": "video",
+            "state": state,
+            "eq": 1 if playing.is_playing else 0,
+            "pos": playing.position_ms,
+            "dur": playing.duration_ms,
+        }
+
     def _title_card(self, playing: NowPlaying, state: str, kind: str) -> dict:
         """Artist and title, for when no lyric line can be shown."""
         return {
             "t": "frame",
             "mode": "lyrics",
             "meta": playing.artist,
-            "main": playing.title,
+            "main": mark_word_breaks(playing.title),
             "lyr": kind,
             "state": state,
             "eq": 1 if playing.is_playing else 0,
@@ -448,6 +542,9 @@ class DeskConsole:
         self.audio.start()
         if hasattr(self.hardware, "start"):
             self.hardware.start()
+        # Loading the Thai dictionary takes a quarter of a second; do it now,
+        # off the loop, rather than as a stall on the first Thai line.
+        threading.Thread(target=warm_up_thai, name="thai-warm-up", daemon=True).start()
         log.info("catsole running; mode=%s", self.mode)
         try:
             while not self._stop.is_set():

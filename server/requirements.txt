@@ -17,4 +17,8 @@ winrt-Windows.Storage.Streams>=2.0
 numpy>=1.26
 pyaudiowpatch>=0.2.12
 
+# Thai word boundaries, so the display wraps Thai between words rather than
+# through them. Optional -- without it the firmware guesses syllable edges.
+pythainlp>=5.0
+
 pytest>=8.0

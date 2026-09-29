@@ -10,7 +10,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from catsole.media import NowPlaying, extrapolate_position, is_music
+from catsole.media import (
+    NowPlaying,
+    extrapolate_position,
+    is_music,
+    netflix_kind,
+    netflix_show,
+)
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -104,3 +110,35 @@ def test_is_music_empty_allowlist_permits_all():
 def test_is_music_can_require_an_artist():
     assert not is_music(song(artist="   "), require_artist=True)
     assert is_music(song(artist="   "), require_artist=False)
+
+
+# Brave, as observed: one session for the whole browser, carrying only the
+# tab's title. Netflix's player page is titled just "Netflix".
+def test_netflix_player_in_a_browser_is_a_watch_session():
+    watching = song(artist="", title="Netflix", duration_ms=1_434_000)
+    assert netflix_kind(watching) == "watch"
+
+
+def test_netflix_browse_pages_are_trailers_not_shows():
+    # The home page autoplays previews, and each one grabs the session.
+    assert netflix_kind(song(artist="", title="Home - Netflix", duration_ms=90_000)) == "browse"
+    assert netflix_kind(song(artist="", title="My List - Netflix")) == "browse"
+
+
+def test_netflix_app_is_recognised_by_its_id():
+    app = song(artist="", title="A Show", app_id="4DF9E0F8.Netflix_mcm4njqhnhss8!Netflix.App")
+    assert netflix_kind(app) == "watch"
+
+
+def test_a_song_called_netflix_is_still_a_song():
+    assert netflix_kind(song(artist="An Artist", title="Netflix")) is None
+    assert netflix_kind(song()) is None
+
+
+def test_netflix_show_is_empty_when_only_the_page_title_is_known():
+    assert netflix_show(song(artist="", title="Netflix")) == ""
+
+
+def test_netflix_show_uses_a_real_title_when_there_is_one():
+    app = song(artist="", title="A Show", app_id="4DF9E0F8.Netflix_mcm4njqhnhss8!Netflix.App")
+    assert netflix_show(app) == "A Show"
