@@ -22,7 +22,10 @@ from catsole.app import MODES, DeskConsole
 from catsole.config import Config
 from catsole.link import NullLink, SerialLink, find_port
 
-LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "catsole"
+if os.name == "nt":
+    LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "catsole"
+else:
+    LOG_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))) / "catsole"
 LOG_FILE = LOG_DIR / "catsole.log"
 
 

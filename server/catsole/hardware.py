@@ -139,6 +139,31 @@ def find_fans(rows: list[tuple[str, str, str]], limit: int = 3) -> list[dict]:
     return out
 
 
+# Linux hwmon drivers and the reading that best stands for the whole CPU:
+# AMD's control temperature, Intel's package, then anything the driver has.
+CPU_SENSOR_DRIVERS = (
+    ("k10temp", ("Tctl", "Tdie")),
+    ("zenpower", ("Tctl", "Tdie")),
+    ("coretemp", ("Package id 0",)),
+    ("cpu_thermal", ()),          # Raspberry Pi and other SoCs
+    ("acpitz", ()),
+)
+
+
+def cpu_temp_from_sensors(sensors: dict) -> float | None:
+    """CPU temperature from psutil.sensors_temperatures(), or None."""
+    for driver, labels in CPU_SENSOR_DRIVERS:
+        readings = sensors.get(driver) or []
+        for label in labels:
+            for reading in readings:
+                if reading.label == label and reading.current:
+                    return float(reading.current)
+        for reading in readings:
+            if reading.current:
+                return float(reading.current)
+    return None
+
+
 def parse_nvidia_smi(csv_line: str) -> dict:
     """Parse one CSV row from nvidia-smi into a partial GPU dict.
 
@@ -216,6 +241,7 @@ class HardwareReader:
         self._read_psutil(stats)
         self._read_nvidia(stats)
         self._read_lhm(stats)
+        self._read_linux_temp(stats)
         return stats
 
     def _read_psutil(self, stats: dict) -> None:
@@ -236,6 +262,19 @@ class HardwareReader:
             stats["ram"]["percent"] = round(mem.percent, 1)
         except Exception as exc:
             log.debug("psutil memory read failed: %s", exc)
+
+    def _read_linux_temp(self, stats: dict) -> None:
+        # Linux exposes CPU temperature to ordinary users, so nothing like
+        # LibreHardwareMonitor is needed there.
+        if stats["cpu"]["temp"] is not None or not hasattr(psutil, "sensors_temperatures"):
+            return
+        try:
+            temp = cpu_temp_from_sensors(psutil.sensors_temperatures())
+        except Exception as exc:
+            log.debug("psutil temperature read failed: %s", exc)
+            return
+        if temp is not None:
+            stats["cpu"]["temp"] = round(temp, 1)
 
     def _read_nvidia(self, stats: dict) -> None:
         if self._nvidia_missing:

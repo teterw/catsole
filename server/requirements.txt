@@ -6,16 +6,20 @@ flask>=3.0
 # SMTC access. The older "winsdk" package has no wheel for Python 3.13 and
 # tries to build from source (needs Visual Studio); these split packages are
 # its maintained successor and ship 3.13 wheels.
-winrt-runtime>=2.0
-winrt-Windows.Media.Control>=2.0
-winrt-Windows.Media>=2.0
-winrt-Windows.Foundation>=2.0
-winrt-Windows.Storage.Streams>=2.0
+winrt-runtime>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Control>=2.0; sys_platform == "win32"
+winrt-Windows.Media>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
 
-# Audio-reactive equalizer: WASAPI loopback capture plus FFT.
+# Now-playing on Linux: MPRIS over D-Bus.
+jeepney>=0.8; sys_platform == "linux"
+
+# Audio-reactive equalizer: loopback capture plus FFT. On Linux the capture
+# is parec (pulseaudio-utils), a system package rather than a pip one.
 # Optional -- the device falls back to a synthetic wave without them.
 numpy>=1.26
-pyaudiowpatch>=0.2.12
+pyaudiowpatch>=0.2.12; sys_platform == "win32"
 
 # Thai word boundaries, so the display wraps Thai between words rather than
 # through them. Optional -- without it the firmware guesses syllable edges.

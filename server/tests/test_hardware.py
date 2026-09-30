@@ -187,3 +187,29 @@ def test_find_fans_respects_the_limit():
 
 def test_find_fans_on_empty_tree():
     assert find_fans([]) == []
+
+
+# Linux: the kernel's own sensors, through psutil.
+from collections import namedtuple
+
+from catsole.hardware import cpu_temp_from_sensors
+
+Temp = namedtuple("Temp", "label current high critical")
+
+
+def test_linux_cpu_temp_prefers_the_package_reading():
+    sensors = {
+        "nvme": [Temp("Composite", 38.9, 80, 85)],
+        "k10temp": [Temp("Tccd1", 55.0, None, None), Temp("Tctl", 61.4, None, None)],
+    }
+    assert cpu_temp_from_sensors(sensors) == 61.4
+
+
+def test_linux_cpu_temp_reads_intel_package():
+    sensors = {"coretemp": [Temp("Core 0", 50.0, 80, 100), Temp("Package id 0", 57.0, 80, 100)]}
+    assert cpu_temp_from_sensors(sensors) == 57.0
+
+
+def test_linux_cpu_temp_is_none_without_a_cpu_sensor():
+    assert cpu_temp_from_sensors({"nvme": [Temp("Composite", 38.9, 80, 85)]}) is None
+    assert cpu_temp_from_sensors({}) is None
