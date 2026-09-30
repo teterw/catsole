@@ -28,12 +28,14 @@ param(
     [switch]$Status,
     # The board enumerates a few seconds after logon, and LibreHardwareMonitor
     # (if you use it) needs longer still.
-    [int]$DelaySeconds = 20
+    [int]$DelaySeconds = 20,
+    # The installer passes its own virtual environment's pythonw here.
+    [string]$Pythonw = '',
+    [string]$TaskName = 'catsole'
 )
 
 $ErrorActionPreference = 'Stop'
 
-$TaskName = 'catsole'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RunScript = Join-Path $ScriptDir 'run.py'
 $LogFile = Join-Path $env:LOCALAPPDATA 'catsole\catsole.log'
@@ -77,7 +79,7 @@ function Install-Task {
         throw "run.py not found next to this script (looked in $ScriptDir)"
     }
 
-    $pythonw = Get-PythonwPath
+    $pythonw = if ($Pythonw) { $Pythonw } else { Get-PythonwPath }
     Write-Host "Using interpreter: $pythonw"
 
     $action = New-ScheduledTaskAction -Execute $pythonw `

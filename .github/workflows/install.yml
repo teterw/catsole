@@ -1,0 +1,92 @@
+name: install
+
+# The Linux half of catsole can only be proven on Linux. This gives a runner
+# what a desktop login would -- a systemd user session, a session bus and a
+# sound server -- then runs the one-line installer from this commit and
+# checks the service end to end.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: A systemd user session, as a desktop login gives
+        run: |
+          sudo loginctl enable-linger "$USER"
+          uid="$(id -u)"
+          for _ in $(seq 1 30); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
+
+      - name: A sound server with an output to monitor
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pulseaudio pulseaudio-utils
+          systemctl --user start pulseaudio.socket pulseaudio.service 2>/dev/null \
+            || pulseaudio --start --exit-idle-time=-1
+          for _ in $(seq 1 20); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
+          pactl load-module module-null-sink sink_name=catsole_test >/dev/null
+          pactl set-default-sink catsole_test
+          pactl info | grep -i "default sink"
+
+      - name: One-line install, from this commit
+        env:
+          CATSOLE_SOURCE: ${{ github.workspace }}
+          CATSOLE_NO_FLASH: "1"
+        run: bash install.sh
+
+      - name: The service is enabled, running, and answering
+        run: |
+          systemctl --user is-enabled catsole
+          systemctl --user is-active catsole
+          curl -fs http://127.0.0.1:8730/api/state > state.json
+          python3 -c "import json; d = json.load(open('state.json')); print(d['link'], d['audio']); assert d['audio']['available'], d['audio']"
+
+      - name: Tests, with a real session bus and sound server
+        env:
+          CATSOLE_LINUX_IT: "1"
+        run: |
+          app="$HOME/.local/share/catsole"
+          "$app/venv/bin/python" -m pytest "$app/app/server/tests" -q
+
+      - name: The running service follows a playing MPRIS player
+        run: |
+          app="$HOME/.local/share/catsole"
+          "$app/venv/bin/python" "$app/app/server/tests/fake_mpris.py" &
+          player=$!
+          ok=""
+          for _ in $(seq 1 20); do
+            title="$(curl -fs http://127.0.0.1:8730/api/state | python3 -c "import json, sys; n = json.load(sys.stdin)['now_playing'] or {}; print(n.get('title', ''))")"
+            [ "$title" = "A Song" ] && ok=1 && break
+            sleep 0.5
+          done
+          kill "$player"
+          [ -n "$ok" ] || { echo "the service never saw the player"; journalctl --user -u catsole --no-pager | tail -30; exit 1; }
+          echo "now playing: $title"
+
+      - name: Running it again updates in place
+        env:
+          CATSOLE_SOURCE: ${{ github.workspace }}
+          CATSOLE_NO_FLASH: "1"
+        run: |
+          echo '{}' > "$HOME/.local/share/catsole/app/server/config.json"
+          bash install.sh
+          test -f "$HOME/.local/share/catsole/app/server/config.json"
+          systemctl --user is-active catsole
+          [ "$(pgrep -fc 'catsole/app/server/run.py')" = "1" ]
+
+      - name: Uninstall leaves nothing behind
+        run: |
+          bash install.sh --uninstall
+          ! systemctl --user is-enabled catsole 2>/dev/null
+          test ! -e "$HOME/.local/share/catsole"
+          test ! -e /etc/udev/rules.d/60-catsole.rules
+          ! pgrep -f 'catsole/app/server/run.py'
