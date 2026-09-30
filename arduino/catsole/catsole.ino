@@ -198,10 +198,16 @@ static uint16_t beatPeriodMs = 0;
 static float catPhase = 0.0f;
 static uint32_t catPhaseMs = 0;
 
-/* A lyric line that swaps instantly is jarring at this size, so the
-   outgoing line is kept around long enough to slide it out while the new
-   one slides in beneath it. */
-static const uint16_t TRANSITION_MS = 260;
+/* A lyric line that swaps instantly is jarring at this size. The outgoing
+   line dissolves while drifting up a few pixels, then the new one
+   dissolves in, rising into place. When nothing follows -- an instrumental
+   gap -- the line takes longer to fade away, and a line arriving after a
+   gap simply fades in. The old full-height slide moved every pixel of the
+   band at once, which read as a jolt rather than a change of line. */
+static const uint16_t FADE_OUT_MS = 150;
+static const uint16_t FADE_IN_MS = 220;
+static const uint16_t FADE_AWAY_MS = 450;
+static const uint8_t FADE_DRIFT_PX = 5;
 static uint32_t transitionStartMs = 0;
 /* When the current layout's line arrived, which is what its pages count
    from. Kept apart from transitionStartMs, which moves on first. */
@@ -1109,6 +1115,31 @@ static void drawVideoCard() {
   u8g2.drawStr(2, 45, line);
 }
 
+/* An ordered-dither threshold for each pixel of a 4x4 tile. Clearing the
+   pixels whose threshold is at or above a level leaves that many
+   sixteenths of the text lit, spread evenly, so it dissolves in steps
+   rather than blinking. */
+static const uint8_t DITHER4[4][4] = {
+    {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+
+/* Keep `visible` sixteenths of whatever is lit in the lyric band, left of
+   the mascot. Works on the frame buffer directly, where each byte is a
+   column of eight rows, so the meta strip, the rule and the equalizer
+   around the band are never touched. */
+static void ditherBand(uint8_t visible) {
+  if (visible >= 16) return;
+  uint8_t *buf = u8g2.getBufferPtr();
+  const uint8_t xEnd = CAT_PERCH_X - 3;
+  for (uint8_t y = BAND_TOP; y < BAND_BOTTOM; y++) {
+    uint8_t keep = (uint8_t)~(1 << (y & 7));
+    uint8_t *row = buf + (uint16_t)(y >> 3) * SCREEN_W;
+    const uint8_t *level = DITHER4[y & 3];
+    for (uint8_t x = 0; x < xEnd; x++) {
+      if (level[x & 3] >= visible) row[x] &= keep;
+    }
+  }
+}
+
 static void drawLyrics() {
   u8g2.setFont(u8g2_font_5x7_tf);
   drawMarquee(frame.meta, META_BASELINE, SCREEN_W - 4);
@@ -1132,10 +1163,12 @@ static void drawLyrics() {
       wrapDirty = false;
     }
     drawVideoCard();
-  } else if (frame.mainText[0] != 0) {
+  } else {
     /* Rebuild the layout only when the line actually changed. The outgoing
        line's layout is already finished, so it is copied rather than
-       recomputed. */
+       recomputed. An empty line is a layout too -- one with no rows --
+       which is what lets the last line fade away in a gap, and keeps it
+       from coming back to be chased out when the next line arrives. */
     if (wrapDirty) {
       wrapPrevPage = currentPage(wrapCurrent, millis() - wrapShownMs);
       wrapPrev = wrapCurrent;
@@ -1149,20 +1182,30 @@ static void drawLyrics() {
     }
 
     uint32_t since = millis() - transitionStartMs;
-    if (since < TRANSITION_MS) {
-      /* Ease out, so the incoming line decelerates into place instead of
-         stopping dead. The band is clipped for the duration so neither
-         line can bleed into the meta strip or the equalizer row. */
-      float p = (float)since / (float)TRANSITION_MS;
+    bool hasPrev = wrapPrev.count > 0;
+    bool hasCur = wrapCurrent.count > 0;
+    /* Line to line: out, then in. Line to nothing: a slower fade away.
+       Nothing to line: straight in. */
+    uint16_t outMs = hasPrev ? (hasCur ? FADE_OUT_MS : FADE_AWAY_MS) : 0;
+    uint16_t inMs = hasCur ? FADE_IN_MS : 0;
+
+    if (since < outMs) {
+      float p = (float)since / (float)outMs;
+      u8g2.setClipWindow(0, BAND_TOP, SCREEN_W, BAND_BOTTOM);
+      drawWrapped(wrapPrev, -(int16_t)(p * FADE_DRIFT_PX + 0.5f), wrapPrevPage);
+      u8g2.setMaxClipWindow();
+      ditherBand((uint8_t)((1.0f - p) * 16.0f + 0.5f));
+    } else if (since < (uint32_t)outMs + inMs) {
+      /* Ease out, so the line decelerates into place instead of stopping
+         dead; it is fully there before it has quite finished rising. */
+      float p = (float)(since - outMs) / (float)inMs;
       float q = 1.0f - p;
       float eased = 1.0f - (q * q * q);
-      int16_t travel = (int16_t)(BAND_BOTTOM - BAND_TOP);
-
       u8g2.setClipWindow(0, BAND_TOP, SCREEN_W, BAND_BOTTOM);
-      drawWrapped(wrapPrev, (int16_t)(-eased * travel), wrapPrevPage);
-      drawWrapped(wrapCurrent, (int16_t)((1.0f - eased) * travel), 0);
+      drawWrapped(wrapCurrent, (int16_t)((1.0f - eased) * FADE_DRIFT_PX + 0.5f), 0);
       u8g2.setMaxClipWindow();
-    } else {
+      ditherBand((uint8_t)(eased * 16.0f + 0.5f));
+    } else if (hasCur) {
       /* Turning a page slides it up and out as the next comes in beneath,
          the same motion as a new line, only quicker. */
       uint8_t page = currentPage(wrapCurrent, since);
@@ -1190,7 +1233,7 @@ static void drawLyrics() {
        under a second. */
     uint8_t labelRoom = wrapCurrent.styleIndex >= THAI_STYLE_FIRST ? 1 : 2;
     if (strcmp(frame.lyr, "synced") == 0) {
-    } else if (wrapCount <= labelRoom) {
+    } else if (wrapCurrent.count > 0 && wrapCount <= labelRoom) {
       /* Only label the fallback when the title left room for it. */
       u8g2.setFont(u8g2_font_4x6_tf);
       u8g2.drawUTF8(2, BAND_BOTTOM, strcmp(frame.lyr, "plain") == 0

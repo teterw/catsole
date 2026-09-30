@@ -127,8 +127,10 @@ Three, cycled from the control panel or automatically while idle.
 **Lyrics** — artist and title marqueed along the top, the current synced
 lyric line below, and a full-width equalizer that follows the actual audio.
 Long lines wrap and step down through three font sizes rather than being cut
-off, and a new line slides in as the old one slides out. The mascot perches
-at the right, bobbing on the beat.
+off. A new line dissolves in as the old one dissolves out, a line with
+nothing after it fades away, and a new song's band stays empty for the
+moment its lyrics take to load rather than flashing its title first. The
+mascot perches at the right, bobbing on the beat.
 
 Thai lyrics are shown in Thai, not swapped for the title card. See
 [Thai lyrics](#thai-lyrics) below. A Netflix show gets a card of its own
