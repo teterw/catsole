@@ -7,6 +7,48 @@ live hardware stats. Modes are switched from a small local web page.
 No WiFi is used. The board supports it; this project does not. Everything
 goes over USB serial.
 
+## Quick install
+
+Plug the board in, then paste one line.
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/teterw/catsole/main/install.ps1 | iex
+```
+
+**Linux** (any terminal):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teterw/catsole/main/install.sh | bash
+```
+
+Either one installs whatever is missing (Python; on Linux also `parec`),
+puts catsole and its own Python environment in `%LOCALAPPDATA%\catsole` or
+`~/.local/share/catsole`, flashes the board, and sets catsole to start
+whenever you log in. The control panel is then at <http://127.0.0.1:8730>.
+
+- Board not plugged in? It installs anyway and skips flashing. Plug it in and
+  paste the same line again to flash it.
+- Paste the same line any time to update. Your `config.json` and the lyrics
+  cache are kept.
+- Flashing uses its own Arduino setup with pinned versions, so an Arduino IDE
+  you already have is left alone.
+- On Linux it asks for your password once: to install packages, and to add a
+  udev rule so your user can talk to the board.
+
+To remove it again:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/teterw/catsole/main/install.ps1))) -Uninstall
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/teterw/catsole/main/install.sh | bash -s -- --uninstall
+```
+
+The rest of this README covers building and running it by hand.
+
 ## Parts
 
 | Part | Bus | Notes |
@@ -368,6 +410,23 @@ media session and lyrics mode would be permanently blank.
 
 Because `pythonw` has no console, logs go to
 `%LOCALAPPDATA%\catsole\catsole.log` (rotating, 4 files).
+
+On Linux the installer sets up a systemd **user** service instead
+(`systemctl --user status catsole`), for the same reason: what is playing
+(MPRIS over D-Bus) and the sound output both live in your login session,
+which a system service never sees. Where there is no systemd user session it
+falls back to your desktop's autostart. Logs go to
+`~/.local/state/catsole/catsole.log`.
+
+### Linux support
+
+The service runs on Linux as well as Windows. Now-playing comes from MPRIS,
+which Linux players and browsers publish over D-Bus: every player is read,
+and one that is playing wins. The equalizer and beat tracking record the
+default output's monitor through `parec`, which PipeWire's PulseAudio layer
+provides as well as PulseAudio itself. CPU temperature comes straight from
+the kernel, so LibreHardwareMonitor is not needed there. CI runs the Linux
+installer end to end on every push, with a real session bus and sound server.
 
 ## Protocol
 
