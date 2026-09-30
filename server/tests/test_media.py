@@ -16,6 +16,9 @@ from catsole.media import (
     is_music,
     netflix_kind,
     netflix_show,
+    mpris_now_playing,
+    pick_mpris,
+    unwrap_variants,
 )
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -142,3 +145,49 @@ def test_netflix_show_is_empty_when_only_the_page_title_is_known():
 def test_netflix_show_uses_a_real_title_when_there_is_one():
     app = song(artist="", title="A Show", app_id="4DF9E0F8.Netflix_mcm4njqhnhss8!Netflix.App")
     assert netflix_show(app) == "A Show"
+
+
+# ---- Linux: MPRIS over D-Bus ----------------------------------------------
+
+def test_mpris_metadata_becomes_now_playing():
+    props = {
+        "PlaybackStatus": "Playing",
+        "Position": 83_000_000,                       # microseconds
+        "Metadata": {
+            "xesam:title": "A Song",
+            "xesam:artist": ["An Artist", "Another"],
+            "xesam:album": "An Album",
+            "mpris:length": 210_000_000,
+        },
+    }
+    np_ = mpris_now_playing("org.mpris.MediaPlayer2.firefox.instance_1_42", props)
+    assert np_.title == "A Song"
+    assert np_.artist == "An Artist, Another"
+    assert np_.album == "An Album"
+    assert np_.duration_ms == 210_000
+    assert np_.position_ms == 83_000
+    assert np_.is_playing
+    assert np_.app_id == "firefox.instance_1_42"
+
+
+def test_mpris_player_with_nothing_loaded_is_skipped():
+    assert mpris_now_playing("org.mpris.MediaPlayer2.vlc", {"PlaybackStatus": "Stopped"}) is None
+
+
+def test_mpris_prefers_the_player_that_is_playing():
+    paused = song(title="Paused one", is_playing=False)
+    playing = song(title="Playing one", is_playing=True)
+    assert pick_mpris([paused, playing]).title == "Playing one"
+    assert pick_mpris([paused]).title == "Paused one"
+    assert pick_mpris([]) is None
+
+
+def test_variants_are_unwrapped_all_the_way_down():
+    # jeepney hands variants over as (signature, value) pairs.
+    raw = {"Metadata": ("a{sv}", {"xesam:title": ("s", "A Song"),
+                                  "xesam:artist": ("as", ["An Artist"])}),
+           "PlaybackStatus": ("s", "Paused")}
+    assert unwrap_variants(raw) == {
+        "Metadata": {"xesam:title": "A Song", "xesam:artist": ["An Artist"]},
+        "PlaybackStatus": "Paused",
+    }
