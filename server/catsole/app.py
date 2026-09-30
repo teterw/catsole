@@ -36,6 +36,10 @@ MODES = ("lyrics", "stats", "clock")
 # most within 15s; a song closed for good shows on for at most this long.
 INTERRUPTION_HOLD_S = 15.0
 
+# How long a new song shows an empty band while its lyrics are looked up,
+# rather than flashing the title card for the moment a cached lookup takes.
+LOOKUP_GRACE_S = 1.5
+
 
 def next_mode(current: str) -> str:
     """Advance to the next mode, recovering to the first on anything odd."""
@@ -94,6 +98,7 @@ class DeskConsole:
         # song can outlast something else briefly taking the session.
         self._last_seen: NowPlaying | None = None
         self._last_seen_at = 0.0
+        self._track_started = 0.0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._next_media = 0.0
@@ -166,6 +171,7 @@ class DeskConsole:
             return
 
         self._track_key = shown.track_key
+        self._track_started = now
         self.lyrics = Lyrics(kind="none")
         # A new song has no reason to share the last one's pulse.
         self.audio.reset_beat()
@@ -373,6 +379,23 @@ class DeskConsole:
                 # How long the line stays up, so a long Thai line can page
                 # through its rows in step with the singing.
                 "hold_ms": hold_ms,
+                "lyr": "synced",
+                "state": state,
+                "eq": 1 if playing.is_playing else 0,
+                "pos": playing.position_ms,
+                "dur": playing.duration_ms,
+            }
+
+        # Still looking the lyrics up: an empty band for a moment, rather
+        # than the title card flashing up and straight away giving way.
+        with self._lock:
+            looking = self._track_key in self._inflight
+        if looking and time.monotonic() - self._track_started < LOOKUP_GRACE_S:
+            return {
+                "t": "frame",
+                "mode": "lyrics",
+                "meta": playing.label,
+                "main": "",
                 "lyr": "synced",
                 "state": state,
                 "eq": 1 if playing.is_playing else 0,

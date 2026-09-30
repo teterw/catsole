@@ -481,3 +481,29 @@ def test_thai_lines_go_out_with_their_word_breaks(console):
 def test_panel_reports_a_show_rather_than_missing_lyrics(console):
     console._on_media(netflix())
     assert console.snapshot()["lyrics_kind"] == "video"
+
+
+# ---- the moment a song starts ----------------------------------------------
+
+def test_no_title_card_flashes_while_the_lyrics_are_still_coming(console, clock):
+    # The title used to show for a moment and then give way to the lyrics,
+    # which read as some other line flashing up first.
+    song = playing_song()
+    console.lyrics_provider = StubLyrics()
+    console._inflight.add(song.track_key)       # a lookup still under way
+    console.now_playing = song
+    console._track_key = song.track_key
+    console._track_started = clock[0]
+    console.mode = "lyrics"
+    assert console.build_frame()["main"] == ""
+
+
+def test_the_title_card_shows_if_the_lookup_takes_too_long(console, clock):
+    song = playing_song()
+    console._inflight.add(song.track_key)
+    console.now_playing = song
+    console._track_key = song.track_key
+    console._track_started = clock[0]
+    console.mode = "lyrics"
+    clock[0] += app_module.LOOKUP_GRACE_S + 0.1
+    assert console.build_frame()["main"] == "One"
