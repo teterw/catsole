@@ -177,3 +177,35 @@ def test_related_periods():
     assert audio._related(0.5, 0.75)       # 3:2
     assert audio._related(0.5, 1.0)        # 2:1
     assert not audio._related(0.5, 0.58)   # a different tempo
+
+
+def test_a_tempo_change_is_glided_into_not_jumped(clock):
+    # A move to a new tempo used to land in one step, which the cat showed
+    # as a lurch. It now eases over a few seconds.
+    first, _ = groove(105, 35.0, seed=8)
+    second, _ = groove(124, 40.0, seed=10)
+    tracker = audio.AudioLevels()
+    seen = []
+    original = tracker._publish
+
+    def watch(generation, period, beat_at, locked=None):
+        if period > 0:
+            seen.append(60.0 / period)
+        return original(generation, period, beat_at, locked)
+
+    tracker._publish = watch
+    play(tracker, render(first, 35.0, 8), clock)
+    play(tracker, render(second, 40.0, 10), clock, start=35.0)
+    steps = [abs(b / a - 1.0) for a, b in zip(seen, seen[1:])]
+    assert max(steps) < 0.06
+    assert not audio._related(60.0 / seen[-1], 60.0 / 105)   # it did get there
+
+
+def test_a_small_tempo_refinement_does_not_move_the_bob(clock):
+    tracker = audio.AudioLevels()
+    tracker._period, tracker._beat_at = 0.5, 1000.0 - 60.0   # anchored a minute back
+    clock.now = 1000.0
+    before = tracker.beat_phase
+    at = tracker._rebased(1000.0, 0.5005)
+    tracker._period, tracker._beat_at = 0.5005, at
+    assert abs(tracker.beat_phase - before) < 0.01

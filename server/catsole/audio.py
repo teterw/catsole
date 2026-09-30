@@ -1,7 +1,9 @@
 """Real-time spectrum from whatever the PC is playing.
 
-Captures the output device's loopback stream through WASAPI, so it hears
-the mix that reaches the speakers rather than a microphone. Nothing is
+Captures what is going to the speakers rather than a microphone: the
+output's WASAPI loopback on Windows, and on Linux the default output's
+monitor through parec, which PipeWire's PulseAudio layer provides as well
+as PulseAudio itself. Nothing is
 recorded or written anywhere: each buffer is turned into band levels and
 discarded.
 
@@ -17,6 +19,9 @@ from __future__ import annotations
 import collections
 import logging
 import math
+import shutil
+import subprocess
+import sys
 import threading
 import time
 
@@ -24,13 +29,19 @@ log = logging.getLogger(__name__)
 
 try:
     import numpy as np
-    import pyaudiowpatch as pyaudio
-
-    AUDIO_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only without the extras
     np = None
+try:
+    import pyaudiowpatch as pyaudio
+except ImportError:  # pragma: no cover - Windows only
     pyaudio = None
-    AUDIO_AVAILABLE = False
+
+if sys.platform == "win32":
+    AUDIO_AVAILABLE = np is not None and pyaudio is not None
+    AUDIO_MISSING = "numpy/pyaudiowpatch not installed"
+else:
+    AUDIO_AVAILABLE = np is not None and shutil.which("parec") is not None
+    AUDIO_MISSING = "numpy or parec (pulseaudio-utils) not installed"
 
 BANDS = 16
 LEVELS = 16  # 0..15, one hex digit per band
@@ -119,6 +130,12 @@ CHANGE_MARGIN = 1.3
 CHANGE_AFTER = 5
 _RELATED = (0.5, 2 / 3, 0.75, 1.0, 4 / 3, 1.5, 2.0)
 
+# Any such move is glided into rather than landed in one step, which the
+# cat showed as a lurch: the tempo eases toward the new one by a quarter of
+# the way, at most 3%, every quarter second, and the offset with it.
+GLIDE_GAIN = 0.25
+GLIDE_MAX_STEP = 0.03
+
 
 def _related(a: float, b: float) -> bool:
     """Whether two beat periods are the same pulse counted differently."""
@@ -200,12 +217,13 @@ class AudioLevels:
         self._rephase_tries = 0
         self._locked_at = 0.0
         self._settle_moves = 0
+        self._glide = None
 
     # ---- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
         if not AUDIO_AVAILABLE:
-            self.last_error = "numpy/pyaudiowpatch not installed"
+            self.last_error = AUDIO_MISSING
             log.info("audio reactivity unavailable: %s", self.last_error)
             return
         if self._thread is not None:
@@ -275,22 +293,6 @@ class AudioLevels:
             return all(v < 0.5 for v in self._levels)
 
     # ---- capture ---------------------------------------------------------
-
-    def _open_loopback(self, audio):
-        """Find the loopback companion of the current default output."""
-        api = audio.get_host_api_info_by_type(pyaudio.paWASAPI)
-        default_out = audio.get_device_info_by_index(api["defaultOutputDevice"])
-
-        # Prefer the loopback whose name matches the active output, so
-        # switching speakers does not leave us recording the wrong device.
-        chosen = None
-        for dev in audio.get_loopback_device_info_generator():
-            if default_out["name"] in dev["name"]:
-                chosen = dev
-                break
-            if chosen is None:
-                chosen = dev
-        return chosen
 
     def _track_beat(self, bands: list[float]) -> None:
         """Add this frame to the onset envelope and keep the grid fitted."""
@@ -398,6 +400,9 @@ class AudioLevels:
             period, beat_at = self._period, self._beat_at
         if period <= 0:
             return
+        if self._glide is not None:
+            self._glide_step(newest, generation, period, beat_at)
+            return
         offset_now = (newest - beat_at) % period
         score, fitted, offset = self._refine(env, period, offset_now)
         if not self._clear(score, fitted, env):
@@ -414,8 +419,11 @@ class AudioLevels:
             target = period + PERIOD_GAIN * (fitted - period)
             lo = self._locked_period * (1 - TRACK_RANGE)
             hi = self._locked_period * (1 + TRACK_RANGE)
+            new_period = min(hi, max(lo, target))
             self._publish(
-                generation, min(hi, max(lo, target)), beat_at - PHASE_GAIN * error
+                generation,
+                new_period,
+                self._rebased(newest, new_period, period, beat_at) - PHASE_GAIN * error,
             )
 
         if self._estimates % RECHECK_EVERY:
@@ -452,10 +460,42 @@ class AudioLevels:
                 self._locked_at = newest
                 self._settle_moves = 0
             self._locked_period = best_period
-            if self._publish(generation, best_period, newest - best_offset):
-                log.info("tempo moved to %.1f BPM", 60.0 / best_period)
+            self._glide = (best_period, newest - best_offset)
+            log.info("tempo moving to %.1f BPM", 60.0 / best_period)
+
+    def _rebased(self, newest: float, new_period: float,
+                 period: float | None = None, beat_at: float | None = None) -> float:
+        """Where to anchor a grid of new_period so the bob is exactly where
+        it was at newest. The anchor can be a minute back; changing the
+        period under it re-timed every beat since, and moved the bob."""
+        if period is None:
+            with self._lock:
+                period, beat_at = self._period, self._beat_at
+        fraction = ((newest - beat_at) % period) / period
+        return newest - fraction * new_period
+
+    def _glide_step(self, newest: float, generation: int,
+                    period: float, beat_at: float) -> None:
+        target_period, target_at = self._glide
+        now = ((newest - beat_at) % period) / period
+        wanted = ((newest - target_at) % target_period) / target_period
+        error = wanted - now
+        if error > 0.5:
+            error -= 1.0
+        if error < -0.5:
+            error += 1.0
+        step = GLIDE_GAIN * (target_period - period)
+        limit = GLIDE_MAX_STEP * period
+        new_period = period + max(-limit, min(limit, step))
+        fraction = now + GLIDE_GAIN * error
+        if abs(new_period / target_period - 1.0) < 0.004 and abs(error) < 0.03:
+            new_period, fraction = target_period, wanted
+            self._glide = None
+            log.info("tempo moved to %.1f BPM", 60.0 / target_period)
+        self._publish(generation, new_period, newest - fraction * new_period)
 
     def _start_rephase(self, generation: int) -> None:
+        self._glide = None
         self._rephase = True
         self._rephase_tries = 0
         self._publish(generation, 0.0, 0.0)
@@ -484,6 +524,7 @@ class AudioLevels:
         self._rephase_tries = 0
         self._locked_at = 0.0
         self._settle_moves = 0
+        self._glide = None
 
     # ---- grid fitting ----------------------------------------------------
 
@@ -534,30 +575,13 @@ class AudioLevels:
         return self._refine(env, period, offset)
 
     def _run(self) -> None:
-        audio = None
-        stream = None
+        source = None
         try:
-            audio = pyaudio.PyAudio()
-            device = self._open_loopback(audio)
-            if device is None:
-                self.last_error = "no WASAPI loopback device"
-                log.warning("audio: %s", self.last_error)
-                return
-
-            rate = int(device["defaultSampleRate"])
-            channels = int(device["maxInputChannels"])
+            source = WasapiSource() if sys.platform == "win32" else ParecSource()
+            rate, channels = source.rate, source.channels
             self._frame_s = CHUNK / float(rate)
             self._env = collections.deque(maxlen=int(ENVELOPE_S / self._frame_s))
-            self.device_name = device["name"]
-
-            stream = audio.open(
-                format=pyaudio.paInt16,
-                channels=channels,
-                rate=rate,
-                input=True,
-                input_device_index=device["index"],
-                frames_per_buffer=CHUNK,
-            )
+            self.device_name = source.name
 
             edges = band_edges(rate, self.bands)
             window = np.hanning(CHUNK).astype(np.float32)
@@ -567,7 +591,7 @@ class AudioLevels:
             log.info("audio reactivity on: %s @ %dHz", self.device_name, rate)
 
             while not self._stop.is_set():
-                buf = stream.read(CHUNK, exception_on_overflow=False)
+                buf = source.read(CHUNK)
                 samples = np.frombuffer(buf, dtype=np.int16).astype(np.float32)
                 if channels > 1:
                     samples = samples.reshape(-1, channels).mean(axis=1)
@@ -608,14 +632,94 @@ class AudioLevels:
             log.warning("audio capture stopped: %s", exc)
         finally:
             self.available = False
-            try:
-                if stream is not None:
-                    stream.stop_stream()
-                    stream.close()
-            except Exception:
-                pass
-            try:
-                if audio is not None:
-                    audio.terminate()
-            except Exception:
-                pass
+            if source is not None:
+                source.close()
+
+
+class WasapiSource:
+    """The loopback companion of Windows' current default output."""
+
+    def __init__(self):
+        self._audio = pyaudio.PyAudio()
+        try:
+            api = self._audio.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default_out = self._audio.get_device_info_by_index(api["defaultOutputDevice"])
+            # Prefer the loopback whose name matches the active output, so
+            # switching speakers does not leave us recording the wrong device.
+            chosen = None
+            for dev in self._audio.get_loopback_device_info_generator():
+                if default_out["name"] in dev["name"]:
+                    chosen = dev
+                    break
+                if chosen is None:
+                    chosen = dev
+            if chosen is None:
+                raise OSError("no WASAPI loopback device")
+            self.rate = int(chosen["defaultSampleRate"])
+            self.channels = int(chosen["maxInputChannels"])
+            self.name = chosen["name"]
+            self._stream = self._audio.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.rate,
+                input=True,
+                input_device_index=chosen["index"],
+                frames_per_buffer=CHUNK,
+            )
+        except Exception:
+            self._audio.terminate()
+            raise
+
+    def read(self, frames: int) -> bytes:
+        return self._stream.read(frames, exception_on_overflow=False)
+
+    def close(self) -> None:
+        try:
+            self._stream.stop_stream()
+            self._stream.close()
+        except Exception:
+            pass
+        try:
+            self._audio.terminate()
+        except Exception:
+            pass
+
+
+class ParecSource:
+    """Linux: the default output's monitor, recorded by parec.
+
+    A monitor keeps delivering silence when nothing plays, unlike a WASAPI
+    loopback, so frames arrive at an even pace throughout.
+    """
+
+    def __init__(self, rate: int = 48000, channels: int = 2):
+        self.rate = rate
+        self.channels = channels
+        self.name = "default output monitor"
+        self._proc = subprocess.Popen(
+            [
+                "parec",
+                "--device=@DEFAULT_MONITOR@",
+                "--format=s16le",
+                f"--rate={rate}",
+                f"--channels={channels}",
+                "--latency-msec=20",
+                "--raw",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def read(self, frames: int) -> bytes:
+        want = frames * self.channels * 2
+        data = self._proc.stdout.read(want)
+        if len(data) < want:
+            raise OSError("parec stopped")
+        return data
+
+    def close(self) -> None:
+        self._proc.terminate()
+        try:
+            self._proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
