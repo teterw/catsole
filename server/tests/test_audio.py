@@ -150,3 +150,30 @@ def test_an_estimate_under_way_cannot_publish_over_a_reset(clock):
     tracker.reset_beat()
     assert tracker._publish(stale, 0.5, 1000.0, locked=True) is False
     assert tracker.bpm == 0
+
+
+def test_a_settled_tempo_ignores_the_same_pulse_counted_differently(clock):
+    # Verse and chorus can fit grids 3:2 apart about equally well. The cat
+    # used to follow each in turn mid-song, which read as stumbling.
+    first, _ = groove(105, 35.0, seed=6)
+    second, _ = groove(70, 30.0, seed=7)
+    tracker = audio.AudioLevels()
+    play(tracker, render(first, 35.0, 6), clock)
+    play(tracker, render(second, 30.0, 7), clock, start=35.0)
+    assert tracker.bpm == pytest.approx(105, rel=0.04)
+
+
+def test_a_real_tempo_change_is_still_followed(clock):
+    first, _ = groove(105, 35.0, seed=8)
+    second, _ = groove(124, 40.0, seed=9)
+    tracker = audio.AudioLevels()
+    play(tracker, render(first, 35.0, 8), clock)
+    play(tracker, render(second, 40.0, 9), clock, start=35.0)
+    # Nodding at 124 or at half of it are both on the new song's beat.
+    assert tracker.bpm == pytest.approx(124, rel=0.04) or tracker.bpm == pytest.approx(62, rel=0.04)
+
+
+def test_related_periods():
+    assert audio._related(0.5, 0.75)       # 3:2
+    assert audio._related(0.5, 1.0)        # 2:1
+    assert not audio._related(0.5, 0.58)   # a different tempo

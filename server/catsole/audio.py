@@ -110,6 +110,19 @@ PERIOD_GAIN = 0.15
 RECHECK_EVERY = 8
 RELOCK_MARGIN = 1.15
 RELOCK_AFTER = 3
+# Those corrections are allowed only while the lock settles. After that
+# the tempo holds unless the song really changes tempo: a new grid not
+# 2:1, 3:2 or 4:3 from the old, clearly better for about ten seconds.
+SETTLE_S = 20.0
+SETTLE_MOVES = 2
+CHANGE_MARGIN = 1.3
+CHANGE_AFTER = 5
+_RELATED = (0.5, 2 / 3, 0.75, 1.0, 4 / 3, 1.5, 2.0)
+
+
+def _related(a: float, b: float) -> bool:
+    """Whether two beat periods are the same pulse counted differently."""
+    return any(abs(a / b / r - 1.0) <= 0.04 for r in _RELATED)
 
 # After a pause, or a second with nothing on the beat, the song may come
 # back anywhere against the grid, so the offset is found afresh; the beat
@@ -185,6 +198,8 @@ class AudioLevels:
         self._quiet = 0
         self._rephase = False
         self._rephase_tries = 0
+        self._locked_at = 0.0
+        self._settle_moves = 0
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -350,6 +365,8 @@ class AudioLevels:
             return
 
         self._locked_period = period
+        self._locked_at = newest
+        self._settle_moves = 0
         self._better = 0
         self._quiet = 0
         if self._publish(generation, period, beat_at, locked=True):
@@ -407,13 +424,33 @@ class AudioLevels:
         same_tempo = abs(best_period / period - 1.0) <= TRACK_RANGE
         drift = ((best_offset - offset_now) / period) % 1.0
         same_grid = same_tempo and min(drift, 1.0 - drift) <= 0.15
-        if not same_grid and best > RELOCK_MARGIN * score:
+        settling = (
+            newest - self._locked_at < SETTLE_S
+            and self._settle_moves < SETTLE_MOVES
+        )
+        if settling:
+            # Early on, a lock taken on an intro or half a beat out is
+            # put right.
+            wanted, margin, runs = not same_grid, RELOCK_MARGIN, RELOCK_AFTER
+        else:
+            # After that the tempo stays. Verse and chorus often fit grids
+            # 3:2 or 2:1 apart about equally well, and following each in
+            # turn made the cat stumble; only a genuinely new tempo moves it.
+            wanted = not _related(best_period, period)
+            margin, runs = CHANGE_MARGIN, CHANGE_AFTER
+        if wanted and best > margin * score:
             self._better += 1
         else:
             self._better = 0
-        if self._better >= RELOCK_AFTER:
+        if self._better >= runs:
             self._better = 0
             self._rephase = False
+            if settling:
+                self._settle_moves += 1
+            else:
+                # A new tempo is a new lock, and gets to settle like one.
+                self._locked_at = newest
+                self._settle_moves = 0
             self._locked_period = best_period
             if self._publish(generation, best_period, newest - best_offset):
                 log.info("tempo moved to %.1f BPM", 60.0 / best_period)
@@ -445,6 +482,8 @@ class AudioLevels:
         self._quiet = 0
         self._rephase = False
         self._rephase_tries = 0
+        self._locked_at = 0.0
+        self._settle_moves = 0
 
     # ---- grid fitting ----------------------------------------------------
 
