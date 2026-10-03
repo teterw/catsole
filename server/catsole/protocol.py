@@ -31,7 +31,9 @@ _PUNCTUATION = {
 
 _TRANSLATION = str.maketrans(_PUNCTUATION)
 
-MAX_LINE_BYTES = 1024
+# The longest line is a full-width title bitmap, about 1,370 bytes; the
+# board's receive buffer is sized to match.
+MAX_LINE_BYTES = 1536
 
 # Fields the firmware draws with a Thai-capable face. The meta strip is too
 # short for one -- Thai marks stack above and below the letters -- so only

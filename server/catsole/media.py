@@ -53,6 +53,9 @@ class NowPlaying:
     position_ms: int = 0
     is_playing: bool = False
     app_id: str = ""
+    # Linux only: where MPRIS says the artwork is. Windows hands the image
+    # over directly instead.
+    art_url: str = ""
 
     @property
     def track_key(self) -> tuple[str, str]:
@@ -145,6 +148,41 @@ def is_music(
     return True
 
 
+def image_size(data: bytes | None) -> tuple[int, int] | None:
+    """(width, height) of encoded image bytes, or None."""
+    if not data:
+        return None
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as image:
+            return image.size
+    except Exception:
+        return None
+
+
+def is_youtube_video(now_playing: "NowPlaying | None", artwork: tuple[int, int] | None) -> bool:
+    """Whether a session is a YouTube video rather than a song.
+
+    As Brave reports one: the video's title, the channel as the artist, no
+    album, and the video's thumbnail as artwork, which is wide. YouTube
+    Music carries an album and square cover art; Netflix carries neither a
+    channel nor artwork. The browser's other sites mostly carry no metadata
+    at all, and the ones that do (TikTok, Instagram) say so in the title.
+    """
+    if now_playing is None or artwork is None:
+        return False
+    if not now_playing.artist.strip() or now_playing.album.strip():
+        return False
+    width, height = artwork
+    if height <= 0 or width / height < 1.4:
+        return False
+    title = now_playing.title.casefold()
+    return not any(site in title for site in ("tiktok", "instagram"))
+
+
 def netflix_kind(now_playing: "NowPlaying | None") -> str | None:
     """Whether a session is Netflix: "watch", "browse", or None if not.
 
@@ -226,6 +264,7 @@ def mpris_now_playing(bus_name: str, props: dict) -> "NowPlaying | None":
         position_ms=position_ms,
         is_playing=props.get("PlaybackStatus") == "Playing",
         app_id=bus_name[len(MPRIS_PREFIX):] if bus_name.startswith(MPRIS_PREFIX) else bus_name,
+        art_url=str(meta.get("mpris:artUrl") or ""),
     )
 
 
@@ -243,6 +282,7 @@ class MprisMediaReader:
     def __init__(self):
         self._conn = None
         self._warned = False
+        self._art_url = ""
 
     def _call(self, address, method, signature=None, body=()):
         if self._conn is None:
@@ -281,13 +321,31 @@ class MprisMediaReader:
                 found = mpris_now_playing(name, unwrap_variants(props))
                 if found is not None:
                     players.append(found)
-            return pick_mpris(players)
+            chosen = pick_mpris(players)
+            self._art_url = chosen.art_url if chosen else ""
+            return chosen
         except Exception as exc:
             log.debug("MPRIS poll failed: %s", exc)
             self.close()
             return None
 
     def fetch_thumbnail(self) -> bytes | None:
+        """The current player's artwork. Chromium writes it to a temporary
+        file; Firefox and others give a web address."""
+        url = self._art_url
+        try:
+            if url.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+
+                with open(unquote(urlparse(url).path), "rb") as handle:
+                    return handle.read()
+            if url.startswith(("http://", "https://")):
+                import requests
+
+                response = requests.get(url, timeout=2)
+                return response.content if response.ok else None
+        except Exception as exc:
+            log.debug("artwork fetch failed: %s", exc)
         return None
 
     def close(self) -> None:

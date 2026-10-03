@@ -5,6 +5,8 @@ is exercised by the --no-serial smoke run instead.
 """
 
 import sys
+
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,6 +18,8 @@ from catsole.media import (
     is_music,
     netflix_kind,
     netflix_show,
+    image_size,
+    is_youtube_video,
     mpris_now_playing,
     pick_mpris,
     unwrap_variants,
@@ -191,3 +195,47 @@ def test_variants_are_unwrapped_all_the_way_down():
         "Metadata": {"xesam:title": "A Song", "xesam:artist": ["An Artist"]},
         "PlaybackStatus": "Paused",
     }
+
+
+# ---- YouTube videos ---------------------------------------------------------
+
+def video(**kw):
+    # As Brave reports a YouTube video: channel as artist, no album.
+    base = dict(artist="A Channel", title="A Video", album="", duration_ms=1_200_000, app_id="Brave")
+    base.update(kw)
+    return NowPlaying(**base)
+
+
+def test_a_youtube_video_has_wide_artwork_a_channel_and_no_album():
+    assert is_youtube_video(video(), (150, 83))
+
+
+def test_youtube_music_is_not_a_video():
+    # Songs carry an album and square cover art.
+    assert not is_youtube_video(video(album="An Album"), (150, 150))
+    assert not is_youtube_video(video(), (150, 150))
+
+
+def test_unknown_artwork_is_not_a_video():
+    assert not is_youtube_video(video(), None)
+
+
+def test_other_sites_are_not_youtube():
+    assert not is_youtube_video(video(title="(1)TikTok - Make Your Day"), (150, 83))
+    assert not is_youtube_video(video(artist=""), (150, 83))
+
+
+def test_image_size_reads_png_and_jpeg():
+    from io import BytesIO
+    PIL = pytest.importorskip("PIL.Image")
+    for fmt in ("PNG", "JPEG"):
+        buf = BytesIO()
+        PIL.new("RGB", (150, 83)).save(buf, fmt)
+        assert image_size(buf.getvalue()) == (150, 83)
+    assert image_size(b"not an image") is None
+
+
+def test_mpris_keeps_the_artwork_url():
+    props = {"PlaybackStatus": "Playing",
+             "Metadata": {"xesam:title": "A Video", "mpris:artUrl": "file:///tmp/art.png"}}
+    assert mpris_now_playing("org.mpris.MediaPlayer2.chromium", props).art_url == "file:///tmp/art.png"

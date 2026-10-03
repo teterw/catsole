@@ -22,8 +22,19 @@ from .config import Config
 from .hardware import HardwareReader, empty_stats
 from .link import NullLink, SerialLink
 from .lyrics import Lyrics, LyricsProvider, select_line
-from .media import MediaReader, NowPlaying, is_music, netflix_kind, netflix_show
+from .media import (
+    MediaReader,
+    NowPlaying,
+    image_size,
+    is_music,
+    is_youtube_video,
+    netflix_kind,
+    netflix_show,
+)
 from .protocol import fold_text
+from .textbitmap import HEIGHT as TITLE_BITMAP_HEIGHT
+from .textbitmap import needs_bitmap
+from .textbitmap import render as render_title
 from .thai import mark_word_breaks
 from .thai import warm_up as warm_up_thai
 
@@ -39,6 +50,14 @@ INTERRUPTION_HOLD_S = 15.0
 # How long a new song shows an empty band while its lyrics are looked up,
 # rather than flashing the title card for the moment a cached lookup takes.
 LOOKUP_GRACE_S = 1.5
+
+# The artwork arrives a moment after a track's title, so it is asked for a
+# few times; it is only read to tell a YouTube video from a song.
+ARTWORK_TRIES = 8
+
+# A title bitmap is sent when it changes and again every few seconds, so a
+# board that reset, or a line lost on the wire, soon has it back.
+TITLE_BITMAP_RESEND_S = 4.0
 
 
 def next_mode(current: str) -> str:
@@ -99,6 +118,11 @@ class DeskConsole:
         self._last_seen: NowPlaying | None = None
         self._last_seen_at = 0.0
         self._track_started = 0.0
+        self._artwork: tuple[int, int] | None = None
+        self._art_tries = 0
+        self._bitmap_text = ""
+        self._bitmap_id = 0
+        self._bitmap_sent = 0.0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._next_media = 0.0
@@ -118,6 +142,8 @@ class DeskConsole:
             return
 
         self.device_firmware = str(event.get("fw", ""))
+        # A board that just booted has lost the title bitmap too.
+        self._bitmap_sent = 0.0
         # A board that just booted has no clock until we give it one.
         self._next_rtc = 0.0
         log.info("device announced firmware %s", self.device_firmware)
@@ -172,6 +198,8 @@ class DeskConsole:
 
         self._track_key = shown.track_key
         self._track_started = now
+        self._artwork = None
+        self._art_tries = 0
         self.lyrics = Lyrics(kind="none")
         # A new song has no reason to share the last one's pulse.
         self.audio.reset_beat()
@@ -357,7 +385,7 @@ class DeskConsole:
         state = "playing" if playing.is_playing else "paused"
 
         if netflix_kind(playing) == "watch":
-            return self._video_card(playing, state)
+            return self._video_card(playing, state, "netflix")
 
         if self.lyrics.is_synced:
             position = playing.position_ms + self.config.lyric_offset_ms
@@ -403,23 +431,36 @@ class DeskConsole:
                 "dur": playing.duration_ms,
             }
 
+        # A video, not a song: a card like Netflix's rather than a title
+        # card announcing that no lyrics were found.
+        if is_youtube_video(playing, self._artwork):
+            return self._video_card(playing, state, "youtube")
+
         # No timing available: show the track itself as the headline rather
         # than a lyric line we cannot place.
         return self._title_card(playing, state, self.lyrics.kind)
 
-    def _video_card(self, playing: NowPlaying, state: str) -> dict:
-        """A show: what is on and how far through it, in place of lyrics.
+    def _video_card(self, playing: NowPlaying, state: str, source: str) -> dict:
+        """A show or a video: what is on and how far through it, in place
+        of lyrics.
 
-        Brave passes on only the tab's title, and Netflix's player page is
-        titled just "Netflix", so the show's name is usually unknown; main
-        is then empty and the device draws the Netflix name large instead.
+        Brave passes on only the tab's title for Netflix, and its player
+        page is titled just "Netflix", so the show's name is usually
+        unknown; main is then empty and the device draws the Netflix name
+        large instead. A YouTube video carries its title, and the channel
+        goes in the strip along the top.
         """
+        if source == "youtube":
+            meta, main = playing.artist, playing.title
+        else:
+            meta, main = "Netflix", netflix_show(playing)
         return {
             "t": "frame",
             "mode": "lyrics",
-            "meta": "Netflix",
-            "main": mark_word_breaks(netflix_show(playing)),
+            "meta": meta,
+            "main": mark_word_breaks(main),
             "lyr": "video",
+            "src": source,
             "state": state,
             "eq": 1 if playing.is_playing else 0,
             "pos": playing.position_ms,
@@ -441,8 +482,48 @@ class DeskConsole:
         }
 
     def push_frame(self) -> None:
-        self.link.send(self.build_frame())
+        frame = self.build_frame()
+        self._attach_title_bitmap(frame)
+        self.link.send(frame)
         self._next_frame = time.monotonic() + self.config.frame_interval_s
+
+    def _attach_title_bitmap(self, frame: dict) -> None:
+        """Send the top strip's title as a bitmap when the board cannot
+        draw it, and point the frame at it. Thai has no face small enough
+        for that strip on the board, so it used to vanish from it."""
+        meta = frame.get("meta") or ""
+        if frame.get("mode") != "lyrics" or not needs_bitmap(meta):
+            return
+        rendered = render_title(meta)
+        if rendered is None:
+            return
+        now = time.monotonic()
+        if meta != self._bitmap_text:
+            self._bitmap_text = meta
+            self._bitmap_id = self._bitmap_id % 30000 + 1
+            self._bitmap_sent = 0.0
+        if not self._bitmap_sent or now - self._bitmap_sent >= TITLE_BITMAP_RESEND_S:
+            width, data = rendered
+            self.link.send({
+                "t": "mbmp",
+                "id": self._bitmap_id,
+                "w": width,
+                "h": TITLE_BITMAP_HEIGHT,
+                "d": data.hex(),
+            })
+            self._bitmap_sent = now
+        frame["mb"] = self._bitmap_id
+
+    def _probe_artwork(self) -> None:
+        """Read the current track's artwork shape, once it is there."""
+        if self.now_playing is None or self._artwork is not None:
+            return
+        if self._art_tries >= ARTWORK_TRIES:
+            return
+        self._art_tries += 1
+        fetch = getattr(self.media, "fetch_thumbnail", None)
+        if fetch is not None:
+            self._artwork = image_size(fetch())
 
     # ---- main loop -------------------------------------------------------
 
@@ -452,6 +533,7 @@ class DeskConsole:
 
         if now >= self._next_media:
             self._on_media(self.media.poll())
+            self._probe_artwork()
             self._next_media = now + self.config.media_poll_s
 
         if now >= self._next_stats:
@@ -626,7 +708,10 @@ class DeskConsole:
             },
             # A show has no lyrics to find, which is not the same as none found.
             "lyrics_kind": "video"
-            if playing is not None and netflix_kind(playing) == "watch"
+            if playing is not None and (
+                netflix_kind(playing) == "watch"
+                or (not self.lyrics.is_synced and is_youtube_video(playing, self._artwork))
+            )
             else self.lyrics.kind,
             "stats": self.stats,
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),

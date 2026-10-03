@@ -507,3 +507,76 @@ def test_the_title_card_shows_if_the_lookup_takes_too_long(console, clock):
     console.mode = "lyrics"
     clock[0] += app_module.LOOKUP_GRACE_S + 0.1
     assert console.build_frame()["main"] == "One"
+
+
+# ---- YouTube videos and Thai titles on top ---------------------------------
+
+def youtube_video(**kw):
+    base = dict(artist="A Channel", title="A Video", album="", duration_ms=1_200_000,
+                position_ms=60_000, is_playing=True, app_id="Brave")
+    base.update(kw)
+    return NowPlaying(**base)
+
+
+def test_a_youtube_video_gets_a_card_like_netflix(console):
+    console.mode = "lyrics"
+    console.now_playing = youtube_video()
+    console._artwork = (150, 83)
+    frame = console.build_frame()
+    assert frame["lyr"] == "video"
+    assert frame["src"] == "youtube"
+    assert frame["meta"] == "A Channel"
+    assert frame["main"] == "A Video"
+    assert frame["dur"] == 1_200_000
+
+
+def test_a_music_video_with_lyrics_keeps_its_lyrics(console):
+    console.mode = "lyrics"
+    console.now_playing = youtube_video(position_ms=5_000)
+    console._artwork = (150, 83)
+    console.lyrics = Lyrics(kind="synced", synced=[(1000, "placeholder line")])
+    assert console.build_frame()["lyr"] == "synced"
+
+
+def test_netflix_card_says_it_is_netflix(console):
+    console._on_media(netflix())
+    assert console.build_frame()["src"] == "netflix"
+
+
+def test_the_track_artwork_is_read_once_per_track(console, monkeypatch):
+    shapes = iter([None, b"later"])
+    console.media.fetch_thumbnail = lambda: next(shapes, None)
+    monkeypatch.setattr(app_module, "image_size", lambda data: (150, 83) if data else None)
+    console._on_media(youtube_video())
+    console._probe_artwork()
+    assert console._artwork is None          # not there yet; tries again
+    console._probe_artwork()
+    assert console._artwork == (150, 83)
+
+
+def test_a_thai_title_on_top_goes_out_as_a_bitmap(console):
+    from catsole import textbitmap
+    if textbitmap.find_font() is None:
+        pytest.skip("no Thai-capable font")
+    console.mode = "lyrics"
+    console.now_playing = playing_song(title="อ้าว", position_ms=5_000)
+    # With lyrics the strip reads "artist - title", and the title is Thai.
+    console.lyrics = Lyrics(kind="synced", synced=[(1000, "placeholder line")])
+    console.push_frame()
+    sent = console.link.frames
+    bitmap = next(f for f in sent if f.get("t") == "mbmp")
+    frame = sent[-1]
+    assert frame["mb"] == bitmap["id"]
+    assert bitmap["h"] == textbitmap.HEIGHT
+    assert len(bytes.fromhex(bitmap["d"])) == ((bitmap["w"] + 7) // 8) * bitmap["h"]
+    # Not resent with every frame.
+    console.push_frame()
+    assert sum(f.get("t") == "mbmp" for f in console.link.frames) == 1
+
+
+def test_a_latin_title_needs_no_bitmap(console):
+    console.mode = "lyrics"
+    console.now_playing = playing_song()
+    console.push_frame()
+    assert all(f.get("t") != "mbmp" for f in console.link.frames)
+    assert "mb" not in console.link.frames[-1]

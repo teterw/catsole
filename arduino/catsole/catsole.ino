@@ -150,6 +150,8 @@ struct Frame {
   char mainText[288];
   uint32_t holdMs;  /* how long the main line stays up, 0 when open-ended */
   char lyr[8];
+  char src[10];     /* for a video card: "netflix" or "youtube" */
+  int16_t metaBmp;  /* the title bitmap the strip should show, -1 for text */
   char state[10];
   uint8_t eq;
   uint32_t receivedAtMs;
@@ -254,7 +256,24 @@ static uint8_t wrapPageFrom = 0;
 static uint32_t pageSlideStartMs = 0;
 
 /* ---- serial receive -------------------------------------------------- */
-static char rxBuf[896];
+/* The longest line is a full-width title bitmap: 480px by 11 rows is 660
+   bytes, sent as 1,320 hex digits. */
+static char rxBuf[1536];
+
+/* The strip's title, drawn by the PC when the board has no font small
+   enough for it -- Thai, which needs 14px here and the strip has 11. */
+static const uint8_t META_BMP_H = 11;
+static const uint16_t META_BMP_MAX_W = 480;
+static uint8_t metaBmp[(META_BMP_MAX_W / 8) * META_BMP_H];
+static uint16_t metaBmpW = 0;
+static int16_t metaBmpId = -1;
+
+static uint8_t hexNibble(char c) {
+  if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+  if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
+  if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
+  return 0;
+}
 static uint16_t rxLen = 0;
 static bool rxOverflow = false;
 
@@ -358,12 +377,7 @@ static void handleLine(const char *line) {
   if (strcmp(type, "eq") == 0) {
     const char *bands = doc["b"] | "";
     for (uint8_t i = 0; i < EQ_BANDS && bands[i]; i++) {
-      char c = bands[i];
-      uint8_t v = 0;
-      if (c >= '0' && c <= '9') v = (uint8_t)(c - '0');
-      else if (c >= 'a' && c <= 'f') v = (uint8_t)(c - 'a' + 10);
-      else if (c >= 'A' && c <= 'F') v = (uint8_t)(c - 'A' + 10);
-      eqBand[i] = v;
+      eqBand[i] = hexNibble(bands[i]);
     }
     beatPhase = doc["p"] | 0;
     beatPhaseAtMs = millis();
@@ -398,11 +412,31 @@ static void handleLine(const char *line) {
     return;
   }
 
+  if (strcmp(type, "mbmp") == 0) {
+    uint16_t w = doc["w"] | 0;
+    uint8_t h = doc["h"] | 0;
+    const char *hex = doc["d"] | "";
+    uint16_t bytes = (uint16_t)((w + 7) / 8) * h;
+    /* A short or mangled one is dropped whole; the PC sends it again. */
+    if (h != META_BMP_H || w == 0 || w > META_BMP_MAX_W ||
+        strlen(hex) != (size_t)bytes * 2) {
+      return;
+    }
+    for (uint16_t i = 0; i < bytes; i++) {
+      metaBmp[i] = (uint8_t)((hexNibble(hex[2 * i]) << 4) | hexNibble(hex[2 * i + 1]));
+    }
+    metaBmpW = w;
+    metaBmpId = doc["id"] | -1;
+    return;
+  }
+
   if (strcmp(type, "frame") != 0) return;
 
   copyField(frame.mode, sizeof(frame.mode), doc["mode"] | "lyrics");
   copyField(frame.state, sizeof(frame.state), doc["state"] | "idle");
   copyField(frame.lyr, sizeof(frame.lyr), doc["lyr"] | "none");
+  copyField(frame.src, sizeof(frame.src), doc["src"] | "");
+  frame.metaBmp = doc["mb"] | -1;
   copyField(frame.meta, sizeof(frame.meta), doc["meta"] | "");
 
   /* Frames arrive several times a second carrying the same line, so the
@@ -1065,11 +1099,68 @@ static uint32_t playbackPosition() {
   return pos;
 }
 
-static void drawProgress() {
+static void drawProgress(uint8_t y, uint8_t h) {
   if (frame.durMs == 0) return;
   uint32_t pos = playbackPosition();
   uint8_t w = (uint8_t)(((uint64_t)pos * (SCREEN_W - 4)) / frame.durMs);
-  if (w > 0) u8g2.drawBox(2, RULE_Y + 2, w, 2);
+  if (w > 0) u8g2.drawBox(2, y, w, h);
+}
+
+/* One copy of the title bitmap with its left edge at x0, drawn only where
+   it falls between x = 2 and right. Pixel by pixel, since a scrolling copy
+   starts left of the screen. */
+static void blitTitle(int16_t x0, uint8_t right) {
+  uint16_t perRow = (metaBmpW + 7) / 8;
+  int16_t first = x0 < 2 ? 2 - x0 : 0;
+  for (uint8_t y = 0; y < META_BMP_H; y++) {
+    const uint8_t *row = metaBmp + y * perRow;
+    for (int16_t c = first; c < (int16_t)metaBmpW; c++) {
+      int16_t x = x0 + c;
+      if (x >= right) break;
+      if (row[c >> 3] & (1 << (c & 7))) u8g2.drawPixel(x, y);
+    }
+  }
+}
+
+/* The title bitmap, scrolled like the text marquee when it is too wide. */
+static void drawTitleBitmap(uint8_t boxW) {
+  uint8_t right = boxW + 2;
+  if (metaBmpW <= boxW) {
+    blitTitle(2, right);
+    return;
+  }
+  const uint8_t gap = 14;
+  uint16_t span = metaBmpW + gap;
+  int16_t offset = marqueeOffset % (int16_t)span;
+  blitTitle(2 - offset, right);
+  blitTitle(2 - offset + span, right);
+}
+
+/* Like drawMarquee, but through drawText, so Thai stacks its marks. */
+static void drawTextMarquee(const char *text, uint8_t x0, uint8_t baseline,
+                            uint8_t right, uint8_t above, uint8_t below) {
+  uint16_t width = textWidth(text);
+  if (width <= (uint16_t)(right - x0)) {
+    drawText(x0, baseline, text);
+    return;
+  }
+  const uint8_t gap = 14;
+  uint16_t span = width + gap;
+  int16_t offset = marqueeOffset % (int16_t)span;
+  uint8_t top = (baseline >= above) ? (uint8_t)(baseline - above) : 0;
+  uint8_t bottom = (uint8_t)min((int)baseline + below, (int)SCREEN_H);
+  u8g2.setClipWindow(x0, top, right, bottom);
+  drawText(x0 - offset, baseline, text);
+  drawText(x0 - offset + span, baseline, text);
+  u8g2.setMaxClipWindow();
+}
+
+/* YouTube's play button: a rounded box with the triangle cut out of it. */
+static void drawYoutubeMark(uint8_t x, uint8_t y) {
+  u8g2.drawRBox(x, y, 15, 10, 3);
+  u8g2.setDrawColor(0);
+  u8g2.drawTriangle(x + 6, y + 2, x + 6, y + 8, x + 10, y + 5);
+  u8g2.setDrawColor(1);
 }
 
 /* m:ss, or h:mm:ss for anything an hour or longer. */
@@ -1088,7 +1179,18 @@ static void fmtClock(char *out, size_t n, uint32_t ms) {
    wordmark is the usual case. */
 static void drawVideoCard() {
   const uint8_t boxW = CAT_PERCH_X - 6;
-  if (frame.mainText[0] == 0) {
+  if (strcmp(frame.src, "youtube") == 0) {
+    /* The play-button mark, then the video's title beside it; the channel
+       is in the strip along the top. */
+    drawYoutubeMark(2, 21);
+    if (hasThai(frame.mainText)) {
+      u8g2.setFont(u8g2_font_etl14thai_t);
+      drawTextMarquee(frame.mainText, 21, 30, boxW + 2, 15, 3);
+    } else {
+      u8g2.setFont(u8g2_font_helvB10_tf);
+      drawTextMarquee(frame.mainText, 21, 30, boxW + 2, 12, 3);
+    }
+  } else if (frame.mainText[0] == 0) {
     u8g2.setFont(u8g2_font_helvB10_tf);
     u8g2.drawStr(2, 30, "NETFLIX");
   } else if (hasThai(frame.mainText)) {
@@ -1141,10 +1243,19 @@ static void ditherBand(uint8_t visible) {
 }
 
 static void drawLyrics() {
-  u8g2.setFont(u8g2_font_5x7_tf);
-  drawMarquee(frame.meta, META_BASELINE, SCREEN_W - 4);
-  u8g2.drawHLine(0, RULE_Y, SCREEN_W);
-  drawProgress();
+  /* A title the board has no font for comes from the PC as a bitmap. It
+     is 11 rows tall, so the rule drops a row and progress thins to fit. */
+  bool bitmapTitle = frame.metaBmp >= 0 && frame.metaBmp == metaBmpId && metaBmpW > 0;
+  if (bitmapTitle) {
+    drawTitleBitmap(SCREEN_W - 4);
+    u8g2.drawHLine(0, RULE_Y + 1, SCREEN_W);
+    drawProgress(RULE_Y + 3, 1);
+  } else {
+    u8g2.setFont(u8g2_font_5x7_tf);
+    drawMarquee(frame.meta, META_BASELINE, SCREEN_W - 4);
+    u8g2.drawHLine(0, RULE_Y, SCREEN_W);
+    drawProgress(RULE_Y + 2, 2);
+  }
 
   bool idle = strcmp(frame.state, "idle") == 0;
   bool video = strcmp(frame.lyr, "video") == 0;

@@ -289,10 +289,16 @@ before, ran past the end of short lines and left their last page unseen. A
 page turn slides up the way a new line does, only quicker. Title cards have
 no duration and cycle instead.
 
-Only the main line gets Thai. The artist and title strip along the top is
-7px tall, too short for any Thai face, so Thai there is dropped as it always
-was. A Thai song with no synced lyrics still shows its Thai title, though,
-because the title card puts the title in the main band.
+The artist and title strip along the top is too short for any Thai face the
+board has, so the PC draws that line itself: Tahoma at 11px (Loma or Noto
+Sans Thai on Linux), sent as a one-bit bitmap the board scrolls like the
+text marquee. 11px is the smallest that stayed readable; at 10px the bottoms
+of letters like ว and ย are cut off and read as other letters. Thai is drawn
+with black-and-white hinting, which keeps its marks crisp, and the Latin
+around it smoothed and cut at half, since hinting turned a capital A into a
+4. While a bitmap title is up, the rule under the strip drops a row and the
+progress line thins to fit. Without Pillow or a Thai font, the strip falls
+back to the ASCII it always showed.
 
 ### Idling
 
@@ -328,7 +334,7 @@ when it comes back nothing is looked up again and the beat is not reset.
 Anything else that is actually playing takes over at once, since a skip to
 the next song looks exactly the same.
 
-### Netflix
+### Netflix and YouTube
 
 A show gets a card instead of lyrics: its name, and how far through it you
 are against its length, with the cat sitting and watching rather than bobbing
@@ -343,6 +349,15 @@ the lyric search took "Netflix" for a song title and found a rap song for it.
 
 Netflix's browse pages ("Home - Netflix" and the like) autoplay trailers, so
 they are ignored altogether.
+
+A YouTube video with no synced lyrics gets the same kind of card: YouTube's
+play-button mark with the video's title beside it, scrolling if it is long
+and in Thai if it is Thai, the time below, and the channel in the strip along
+the top. Brave gives no site name, so a video is told from a song by shape:
+the channel comes as the artist, there is no album, and the artwork is the
+video's wide thumbnail. YouTube Music carries an album and square cover art,
+so songs keep the lyrics screen, and so does a music video whose lyrics are
+found.
 
 ## When the PC goes away
 
