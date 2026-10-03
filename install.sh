@@ -108,6 +108,21 @@ if [ "${#missing[@]}" -gt 0 ]; then
     python_ok || { echo "Python 3.10+ with venv is still missing." >&2; exit 1; }
 fi
 
+# A Thai font, so the PC can draw Thai titles for the strip along the top.
+# Not worth failing the install over: without one the strip shows ASCII.
+if command -v fc-list >/dev/null 2>&1 && ! fc-list :lang=th | grep -q .; then
+    say "Adding a Thai font"
+    if command -v apt-get >/dev/null 2>&1; then
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fonts-thai-tlwg </dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+        $SUDO dnf install -y -q google-noto-sans-thai-fonts || true
+    elif command -v pacman >/dev/null 2>&1; then
+        $SUDO pacman -S --needed --noconfirm noto-fonts || true
+    elif command -v zypper >/dev/null 2>&1; then
+        $SUDO zypper --non-interactive install google-noto-sans-thai-fonts || true
+    fi
+fi
+
 # ---- the app -----------------------------------------------------------------
 
 say "Stopping any running copy"

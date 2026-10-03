@@ -25,4 +25,8 @@ pyaudiowpatch>=0.2.12; sys_platform == "win32"
 # through them. Optional -- without it the firmware guesses syllable edges.
 pythainlp>=5.0
 
+# Draws a Thai title for the strip along the top, which has no Thai face
+# small enough on the board. Optional -- without it the strip shows ASCII.
+pillow>=10.0
+
 pytest>=8.0
