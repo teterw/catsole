@@ -580,3 +580,32 @@ def test_a_latin_title_needs_no_bitmap(console):
     console.push_frame()
     assert all(f.get("t") != "mbmp" for f in console.link.frames)
     assert "mb" not in console.link.frames[-1]
+
+
+def facebook(**kw):
+    base = dict(artist="", title="A Page - a post | Facebook", duration_ms=300_000,
+                position_ms=42_000, is_playing=True, app_id="Brave")
+    base.update(kw)
+    return NowPlaying(**base)
+
+
+def test_facebook_gets_a_card_and_no_lyrics(console):
+    # "Facebook" as a title used to be matched to a song's lyrics.
+    console._on_media(facebook(title="Facebook"))
+    assert console.lyrics_provider.calls == []
+    frame = console.build_frame()
+    assert frame["lyr"] == "video"
+    assert frame["src"] == "facebook"
+    assert frame["meta"] == "Facebook"
+    assert frame["main"] == ""
+    assert frame["pos"] == 42_000
+
+
+def test_a_facebook_post_shows_its_text(console):
+    console._on_media(facebook())
+    assert console.build_frame()["main"] == "A Page - a post"
+
+
+def test_facebook_reels_are_still_ignored(console):
+    console._on_media(facebook(duration_ms=20_000))
+    assert console.now_playing is None

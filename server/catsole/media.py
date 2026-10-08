@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -181,6 +182,36 @@ def is_youtube_video(now_playing: "NowPlaying | None", artwork: tuple[int, int] 
         return False
     title = now_playing.title.casefold()
     return not any(site in title for site in ("tiktok", "instagram"))
+
+
+# "(5) " in front of a tab title is Facebook's unread count.
+_FACEBOOK_COUNT = re.compile(r"^\(\d+\)\s*")
+_FACEBOOK_SUFFIX = re.compile(r"\s*\|\s*Facebook$", re.IGNORECASE)
+
+
+def is_facebook(now_playing: "NowPlaying | None") -> bool:
+    """Whether a session is a Facebook video.
+
+    Facebook publishes no media metadata, so a browser reports only the
+    tab's title: "Facebook" on the feed, with the unread count in front
+    when there is one, and "<page> - <post> | Facebook" on a video's own
+    page. Searching lyrics for "Facebook" used to find a song.
+    """
+    if now_playing is None:
+        return False
+    title = _FACEBOOK_COUNT.sub("", now_playing.title.strip())
+    if title.casefold() == "facebook":
+        return not now_playing.artist.strip()
+    return bool(_FACEBOOK_SUFFIX.search(title))
+
+
+def facebook_post(now_playing: "NowPlaying") -> str:
+    """What the tab title says about the video, without the site's name
+    and the unread count: "" on the feed, where it says nothing."""
+    title = _FACEBOOK_COUNT.sub("", now_playing.title.strip())
+    if title.casefold() == "facebook":
+        return ""
+    return _FACEBOOK_SUFFIX.sub("", title).strip()
 
 
 def netflix_kind(now_playing: "NowPlaying | None") -> str | None:

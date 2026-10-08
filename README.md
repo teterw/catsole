@@ -334,7 +334,7 @@ when it comes back nothing is looked up again and the beat is not reset.
 Anything else that is actually playing takes over at once, since a skip to
 the next song looks exactly the same.
 
-### Netflix and YouTube
+### Netflix, YouTube and Facebook
 
 A show gets a card instead of lyrics: its name, and how far through it you
 are against its length, with the cat sitting and watching rather than bobbing
@@ -358,6 +358,14 @@ the channel comes as the artist, there is no album, and the artwork is the
 video's wide thumbnail. YouTube Music carries an album and square cover art,
 so songs keep the lyrics screen, and so does a music video whose lyrics are
 found.
+
+Facebook gets one too: its "f" mark with what the tab says about the video
+beside it, or the name alone on the feed, and the page in the strip along the
+top when the session names one. Facebook publishes no media metadata either,
+so the tab's title is all there is: "Facebook" on the feed (with the unread
+count in front when there is one) and "<page> - <post> | Facebook" on a
+video's own page. Searching lyrics for "Facebook" used to find a song, so no
+lookup is made. Clips under a minute are still ignored, like reels anywhere.
 
 ## When the PC goes away
 

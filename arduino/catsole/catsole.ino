@@ -1155,6 +1155,18 @@ static void drawTextMarquee(const char *text, uint8_t x0, uint8_t baseline,
   u8g2.setMaxClipWindow();
 }
 
+/* Facebook's mark: a rounded square with the "f" cut out of it, the
+   stem running off the bottom edge as it does in the real one. */
+static void drawFacebookMark(uint8_t x, uint8_t y) {
+  u8g2.drawRBox(x, y, 11, 11, 2);
+  u8g2.setDrawColor(0);
+  u8g2.drawBox(x + 5, y + 3, 2, 8);    /* stem */
+  u8g2.drawHLine(x + 6, y + 2, 3);     /* top of the hook */
+  u8g2.drawPixel(x + 5, y + 3);
+  u8g2.drawHLine(x + 3, y + 5, 6);     /* crossbar */
+  u8g2.setDrawColor(1);
+}
+
 /* YouTube's play button: a rounded box with the triangle cut out of it. */
 static void drawYoutubeMark(uint8_t x, uint8_t y) {
   u8g2.drawRBox(x, y, 15, 10, 3);
@@ -1189,6 +1201,20 @@ static void drawVideoCard() {
     } else {
       u8g2.setFont(u8g2_font_helvB10_tf);
       drawTextMarquee(frame.mainText, 21, 30, boxW + 2, 12, 3);
+    }
+  } else if (strcmp(frame.src, "facebook") == 0) {
+    /* The mark, then what the tab says about the video; on the feed it
+       says nothing, so the name stands in. */
+    drawFacebookMark(2, 20);
+    if (frame.mainText[0] == 0) {
+      u8g2.setFont(u8g2_font_helvB10_tf);
+      u8g2.drawStr(17, 30, "facebook");
+    } else if (hasThai(frame.mainText)) {
+      u8g2.setFont(u8g2_font_etl14thai_t);
+      drawTextMarquee(frame.mainText, 17, 30, boxW + 2, 15, 3);
+    } else {
+      u8g2.setFont(u8g2_font_helvB10_tf);
+      drawTextMarquee(frame.mainText, 17, 30, boxW + 2, 12, 3);
     }
   } else if (frame.mainText[0] == 0) {
     u8g2.setFont(u8g2_font_helvB10_tf);

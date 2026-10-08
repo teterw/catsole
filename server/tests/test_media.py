@@ -18,7 +18,9 @@ from catsole.media import (
     is_music,
     netflix_kind,
     netflix_show,
+    facebook_post,
     image_size,
+    is_facebook,
     is_youtube_video,
     mpris_now_playing,
     pick_mpris,
@@ -239,3 +241,28 @@ def test_mpris_keeps_the_artwork_url():
     props = {"PlaybackStatus": "Playing",
              "Metadata": {"xesam:title": "A Video", "mpris:artUrl": "file:///tmp/art.png"}}
     assert mpris_now_playing("org.mpris.MediaPlayer2.chromium", props).art_url == "file:///tmp/art.png"
+
+
+# ---- Facebook ---------------------------------------------------------------
+# As Brave reports it: the tab title, which is just "Facebook" on the feed
+# (with a notification count when there is one), and "<page> - <post> |
+# Facebook" on a video's own page.
+
+def test_facebook_feed_tab_is_facebook():
+    assert is_facebook(song(artist="", title="Facebook"))
+    assert is_facebook(song(artist="", title="(5) Facebook"))
+
+
+def test_a_facebook_video_page_is_facebook():
+    assert is_facebook(song(artist="", title="A Page - a post about something | Facebook"))
+
+
+def test_a_song_mentioning_facebook_is_not_facebook():
+    assert not is_facebook(song(artist="An Artist", title="Facebook Song"))
+    assert not is_facebook(song())
+
+
+def test_facebook_post_text_loses_the_site_name_and_count():
+    assert facebook_post(song(artist="", title="(2) A Page - a post | Facebook")) == "A Page - a post"
+    assert facebook_post(song(artist="", title="(5) Facebook")) == ""
+    assert facebook_post(song(artist="", title="Facebook")) == ""
