@@ -150,7 +150,8 @@ struct Frame {
   char mainText[288];
   uint32_t holdMs;  /* how long the main line stays up, 0 when open-ended */
   char lyr[8];
-  char src[10];     /* for a video card: "netflix" or "youtube" */
+  char src[10];     /* for a video card: "netflix", "youtube", "facebook"
+                       or "instagram", which just fits */
   int16_t metaBmp;  /* the title bitmap the strip should show, -1 for text */
   char state[10];
   uint8_t eq;
@@ -1167,6 +1168,14 @@ static void drawFacebookMark(uint8_t x, uint8_t y) {
   u8g2.setDrawColor(1);
 }
 
+/* Instagram's camera: a rounded frame with the lens ring in the middle
+   and the flash dot top right, clear of the corner. */
+static void drawInstagramMark(uint8_t x, uint8_t y) {
+  u8g2.drawRFrame(x, y, 11, 11, 2);
+  u8g2.drawCircle(x + 5, y + 5, 2);
+  u8g2.drawPixel(x + 8, y + 2);
+}
+
 /* YouTube's play button: a rounded box with the triangle cut out of it. */
 static void drawYoutubeMark(uint8_t x, uint8_t y) {
   u8g2.drawRBox(x, y, 15, 10, 3);
@@ -1202,13 +1211,19 @@ static void drawVideoCard() {
       u8g2.setFont(u8g2_font_helvB10_tf);
       drawTextMarquee(frame.mainText, 21, 30, boxW + 2, 12, 3);
     }
-  } else if (strcmp(frame.src, "facebook") == 0) {
+  } else if (strcmp(frame.src, "facebook") == 0 ||
+             strcmp(frame.src, "instagram") == 0) {
     /* The mark, then what the tab says about the video; on the feed it
        says nothing, so the name stands in. */
-    drawFacebookMark(2, 20);
+    const bool facebook = frame.src[0] == 'f';
+    if (facebook) {
+      drawFacebookMark(2, 20);
+    } else {
+      drawInstagramMark(2, 20);
+    }
     if (frame.mainText[0] == 0) {
       u8g2.setFont(u8g2_font_helvB10_tf);
-      u8g2.drawStr(17, 30, "facebook");
+      u8g2.drawStr(17, 30, facebook ? "facebook" : "Instagram");
     } else if (hasThai(frame.mainText)) {
       u8g2.setFont(u8g2_font_etl14thai_t);
       drawTextMarquee(frame.mainText, 17, 30, boxW + 2, 15, 3);

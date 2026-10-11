@@ -27,11 +27,12 @@ from .media import (
     NowPlaying,
     facebook_post,
     image_size,
-    is_facebook,
+    instagram_post,
     is_music,
     is_youtube_video,
     netflix_kind,
     netflix_show,
+    tab_site,
 )
 from .protocol import fold_text
 from .textbitmap import HEIGHT as TITLE_BITMAP_HEIGHT
@@ -205,9 +206,9 @@ class DeskConsole:
         self.lyrics = Lyrics(kind="none")
         # A new song has no reason to share the last one's pulse.
         self.audio.reset_beat()
-        # A show or a Facebook video has no lyrics, and searching for
-        # "Netflix" or "Facebook" found a song.
-        if netflix_kind(shown) is None and not is_facebook(shown):
+        # A show or a Facebook or Instagram video has no lyrics, and
+        # searching for "Netflix", "Facebook" or "Instagram" found a song.
+        if netflix_kind(shown) is None and tab_site(shown) is None:
             self._fetch_lyrics(shown)
 
     def _worth_showing(self, now_playing: NowPlaying | None) -> NowPlaying | None:
@@ -226,7 +227,7 @@ class DeskConsole:
             allow_apps=self.config.allow_apps,
             block_apps=self.config.block_apps,
             require_artist=(
-                self.config.require_artist and kind is None and not is_facebook(now_playing)
+                self.config.require_artist and kind is None and tab_site(now_playing) is None
             ),
         ):
             return None
@@ -391,8 +392,9 @@ class DeskConsole:
 
         if netflix_kind(playing) == "watch":
             return self._video_card(playing, state, "netflix")
-        if is_facebook(playing):
-            return self._video_card(playing, state, "facebook")
+        site = tab_site(playing)
+        if site is not None:
+            return self._video_card(playing, state, site)
 
         if self.lyrics.is_synced:
             position = playing.position_ms + self.config.lyric_offset_ms
@@ -462,6 +464,8 @@ class DeskConsole:
         elif source == "facebook":
             # The page's name, when the session has one apart from the title.
             meta, main = playing.artist or "Facebook", facebook_post(playing)
+        elif source == "instagram":
+            meta, main = "Instagram", instagram_post(playing)
         else:
             meta, main = "Netflix", netflix_show(playing)
         return {
@@ -720,7 +724,7 @@ class DeskConsole:
             "lyrics_kind": "video"
             if playing is not None and (
                 netflix_kind(playing) == "watch"
-                or is_facebook(playing)
+                or tab_site(playing) is not None
                 or (not self.lyrics.is_synced and is_youtube_video(playing, self._artwork))
             )
             else self.lyrics.kind,

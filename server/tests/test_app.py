@@ -609,3 +609,38 @@ def test_a_facebook_post_shows_its_text(console):
 def test_facebook_reels_are_still_ignored(console):
     console._on_media(facebook(duration_ms=20_000))
     assert console.now_playing is None
+
+
+def instagram(**kw):
+    base = dict(artist="", title="Instagram", duration_ms=90_000,
+                position_ms=12_000, is_playing=True, app_id="Brave")
+    base.update(kw)
+    return NowPlaying(**base)
+
+
+def test_instagram_gets_a_card_and_no_lyrics(console):
+    # "Instagram" as a title used to be matched to a song's lyrics.
+    console._on_media(instagram(title="(1) Instagram"))
+    assert console.lyrics_provider.calls == []
+    frame = console.build_frame()
+    assert frame["lyr"] == "video"
+    assert frame["src"] == "instagram"
+    assert frame["meta"] == "Instagram"
+    assert frame["main"] == ""
+    assert frame["pos"] == 12_000
+    assert console.snapshot()["lyrics_kind"] == "video"
+
+
+def test_instagram_stories_show_what_the_tab_says(console):
+    console._on_media(instagram(title="Stories \u2022 Instagram"))
+    assert console.build_frame()["main"] == "Stories"
+
+
+def test_instagram_reels_are_still_ignored(console):
+    console._on_media(instagram(duration_ms=20_000))
+    assert console.now_playing is None
+
+
+def test_a_song_called_instagram_still_gets_lyrics(console):
+    console._on_media(instagram(artist="DEAN", title="instagram", duration_ms=200_000))
+    assert console.lyrics_provider.calls != []

@@ -184,8 +184,8 @@ def is_youtube_video(now_playing: "NowPlaying | None", artwork: tuple[int, int] 
     return not any(site in title for site in ("tiktok", "instagram"))
 
 
-# "(5) " in front of a tab title is Facebook's unread count.
-_FACEBOOK_COUNT = re.compile(r"^\(\d+\)\s*")
+# "(5) " in front of a tab title is Facebook's or Instagram's unread count.
+_UNREAD_COUNT = re.compile(r"^\(\d+\)\s*")
 _FACEBOOK_SUFFIX = re.compile(r"\s*\|\s*Facebook$", re.IGNORECASE)
 
 
@@ -199,7 +199,7 @@ def is_facebook(now_playing: "NowPlaying | None") -> bool:
     """
     if now_playing is None:
         return False
-    title = _FACEBOOK_COUNT.sub("", now_playing.title.strip())
+    title = _UNREAD_COUNT.sub("", now_playing.title.strip())
     if title.casefold() == "facebook":
         return not now_playing.artist.strip()
     return bool(_FACEBOOK_SUFFIX.search(title))
@@ -208,10 +208,60 @@ def is_facebook(now_playing: "NowPlaying | None") -> bool:
 def facebook_post(now_playing: "NowPlaying") -> str:
     """What the tab title says about the video, without the site's name
     and the unread count: "" on the feed, where it says nothing."""
-    title = _FACEBOOK_COUNT.sub("", now_playing.title.strip())
+    title = _UNREAD_COUNT.sub("", now_playing.title.strip())
     if title.casefold() == "facebook":
         return ""
     return _FACEBOOK_SUFFIX.sub("", title).strip()
+
+
+# Instagram's tab titles keep the site's name in a part of its own:
+# "Stories • Instagram", "Instagram • Messages", and a story shared in a
+# chat is "<what it says> | Instagram • Messages".
+_INSTAGRAM_PARTS = re.compile(r"\s+[•|]\s+")
+
+
+def _instagram_parts(now_playing: "NowPlaying") -> tuple[list[str], int] | None:
+    """The tab title's parts and where "Instagram" is among them, or None."""
+    if now_playing.artist.strip():
+        return None
+    title = _UNREAD_COUNT.sub("", now_playing.title.strip())
+    parts = _INSTAGRAM_PARTS.split(title)
+    for i, part in enumerate(parts):
+        if part.casefold() == "instagram":
+            return parts, i
+    return None
+
+
+def is_instagram(now_playing: "NowPlaying | None") -> bool:
+    """Whether a session is an Instagram video.
+
+    Like Facebook, Instagram publishes no media metadata, so a browser
+    reports only the tab's title and no artist: "Instagram" on the feed
+    and reels, with the unread count in front when there is one, and the
+    page's name beside it elsewhere. Searching lyrics for "Instagram"
+    found a song of that name; a song comes with its artist.
+    """
+    return now_playing is not None and _instagram_parts(now_playing) is not None
+
+
+def instagram_post(now_playing: "NowPlaying") -> str:
+    """What the tab title says beside the site's name: "Stories", or a
+    shared story's text, and "" on the feed, where it says nothing."""
+    found = _instagram_parts(now_playing)
+    if found is None:
+        return ""
+    parts, i = found
+    return " • ".join(parts[:i] or parts[i + 1:])
+
+
+def tab_site(now_playing: "NowPlaying | None") -> str | None:
+    """"facebook" or "instagram" for a video from a site known only by its
+    tab title, else None."""
+    if is_facebook(now_playing):
+        return "facebook"
+    if is_instagram(now_playing):
+        return "instagram"
+    return None
 
 
 def netflix_kind(now_playing: "NowPlaying | None") -> str | None:

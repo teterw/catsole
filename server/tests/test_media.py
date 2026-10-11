@@ -20,7 +20,9 @@ from catsole.media import (
     netflix_show,
     facebook_post,
     image_size,
+    instagram_post,
     is_facebook,
+    is_instagram,
     is_youtube_video,
     mpris_now_playing,
     pick_mpris,
@@ -266,3 +268,39 @@ def test_facebook_post_text_loses_the_site_name_and_count():
     assert facebook_post(song(artist="", title="(2) A Page - a post | Facebook")) == "A Page - a post"
     assert facebook_post(song(artist="", title="(5) Facebook")) == ""
     assert facebook_post(song(artist="", title="Facebook")) == ""
+
+
+# ---- Instagram --------------------------------------------------------------
+# As Brave reports it, all from the service log: the tab title with no
+# artist. "Instagram" on the feed and reels, "(1) Instagram" with unread
+# messages, "Stories • Instagram", "Instagram • Messages", and a story
+# shared in a chat as "<what it says> | Instagram • Messages".
+
+def test_instagram_feed_tab_is_instagram():
+    assert is_instagram(song(artist="", title="Instagram"))
+    assert is_instagram(song(artist="", title="(1) Instagram"))
+
+
+def test_instagram_pages_are_instagram():
+    assert is_instagram(song(artist="", title="Stories • Instagram"))
+    assert is_instagram(song(artist="", title="(2) Instagram • Messages"))
+    assert is_instagram(song(
+        artist="", title="Watch this story by someone on Instagram before it disappears. | Instagram • Messages"))
+
+
+def test_a_song_called_instagram_is_not_instagram():
+    # "Instagram" alone used to be matched to this song's lyrics.
+    assert not is_instagram(song(artist="DEAN", title="instagram"))
+    assert not is_instagram(song(artist="A Channel", title="My week | Instagram"))
+    assert not is_instagram(song(artist="", title="Instagram Reels Compilation"))
+    assert not is_instagram(song())
+
+
+def test_instagram_post_text_loses_the_site_name_and_count():
+    assert instagram_post(song(artist="", title="(1) Instagram")) == ""
+    assert instagram_post(song(artist="", title="Instagram")) == ""
+    assert instagram_post(song(artist="", title="Stories • Instagram")) == "Stories"
+    assert instagram_post(song(artist="", title="Instagram • Messages")) == "Messages"
+    assert instagram_post(song(
+        artist="", title="Watch this story by someone on Instagram before it disappears. | Instagram • Messages"
+    )) == "Watch this story by someone on Instagram before it disappears."

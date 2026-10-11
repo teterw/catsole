@@ -175,8 +175,9 @@ moment its lyrics take to load rather than flashing its title first. The
 mascot perches at the right, bobbing on the beat.
 
 Thai lyrics are shown in Thai, not swapped for the title card. See
-[Thai lyrics](#thai-lyrics) below. A Netflix show gets a card of its own
-instead of lyrics; see [Netflix](#netflix).
+[Thai lyrics](#thai-lyrics) below. A Netflix show, and a YouTube, Facebook or
+Instagram video, gets a card of its own instead of lyrics; see
+[Netflix, YouTube, Facebook and Instagram](#netflix-youtube-facebook-and-instagram).
 
 **Stats** — CPU clock, temperature and load; GPU temperature, load and VRAM;
 and system RAM, as three rows with usage bars. Fan speed sits in the header
@@ -334,7 +335,7 @@ when it comes back nothing is looked up again and the beat is not reset.
 Anything else that is actually playing takes over at once, since a skip to
 the next song looks exactly the same.
 
-### Netflix, YouTube and Facebook
+### Netflix, YouTube, Facebook and Instagram
 
 A show gets a card instead of lyrics: its name, and how far through it you
 are against its length, with the cat sitting and watching rather than bobbing
@@ -366,6 +367,15 @@ so the tab's title is all there is: "Facebook" on the feed (with the unread
 count in front when there is one) and "<page> - <post> | Facebook" on a
 video's own page. Searching lyrics for "Facebook" used to find a song, so no
 lookup is made. Clips under a minute are still ignored, like reels anywhere.
+
+Instagram works the same way, with its camera mark: the name alone on the
+feed and reels, and otherwise what the tab says beside the name, such as
+"Stories". Its tab titles come with no artist: "Instagram" (with the unread
+count in front when there is one), "Stories • Instagram", "Instagram •
+Messages", and a story shared in a chat as "<what it says> | Instagram •
+Messages". Searching lyrics for "Instagram" found a song too, whose lyrics
+the log shows 202 times, so no lookup is made; a song called "Instagram"
+still has its artist and keeps its lyrics.
 
 ## When the PC goes away
 
