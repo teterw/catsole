@@ -377,6 +377,48 @@ Messages". Searching lyrics for "Instagram" found a song too, whose lyrics
 the log shows 202 times, so no lookup is made; a song called "Instagram"
 still has its artist and keeps its lyrics.
 
+## Study mode
+
+The panel has a **study** block under the mode buttons. Type what you are
+studying (recent subjects sit underneath as quick picks), choose
+**countdown** (15, 25, 45, 60 or your own minutes) or **count up**, and press
+**start**. While it runs you get pause, +5 min (countdown) and stop, and a
+note box for what you got done. The note can still be written after the
+session ends, up until the next one starts.
+
+The OLED holds the study screen for the whole session: the subject along
+the top, the timer large, the cat in study glasses, and paw prints walking
+toward a fish. For a countdown the walk is the session; for count up it is
+today's progress toward your daily goal (set on the panel, 1 hour to begin
+with). When a countdown runs out the screen flashes, the cat eats the fish,
+and the PC plays a short chime (switch it off on the panel).
+
+- Time paused, or with the PC asleep, is not counted. A session the PC
+  slept through comes back paused; a restart of the service alone (a crash,
+  or a flash) carries on.
+- Count up asks "still studying?" after 3 hours; with no answer in 10
+  minutes it stops and is logged up to the question. A pause longer than 30
+  minutes ends the session.
+- Sessions under a minute are not saved.
+
+Every session is a row in `study.csv` in the data folder
+(`%LOCALAPPDATA%\catsole`, or `~/.local/state/catsole` on Linux), which opens
+in Excel:
+
+| column | |
+|---|---|
+| `date`, `start`, `end` | when it started (local date) and its clock times |
+| `subject`, `timer` | what, and `countdown` or `countup` |
+| `planned_min` | the countdown's length; empty for count up |
+| `studied_min` | time counted, which is what every total uses |
+| `paused_min` | time spent paused |
+| `distractions`, `distraction_min` | video sites played during it |
+| `note` | what you got done |
+
+Rows are only ever added, so fixing one by hand is safe while catsole runs.
+If Excel has the file open (it locks it), finished sessions wait and are
+written once it is closed; the panel says so meanwhile.
+
 ## When the PC goes away
 
 There is no RTC and no network, so a disconnected device cannot know the time

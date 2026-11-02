@@ -147,6 +147,33 @@
     font-size: 12px;
   }
 
+  /* study block */
+  .navlink { color: var(--dim); font-weight: 400; margin-left: 14px; text-decoration: none; }
+  .navlink:hover { color: var(--phosphor); }
+  .study { margin: 0 0 26px; padding-top: 14px; border-top: 1px solid var(--rule); }
+  .study h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  .srow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .srow.spread { justify-content: space-between; }
+  .lbl { color: var(--dim); width: 56px; }
+  .field {
+    font: inherit; color: var(--text); background: var(--glass);
+    border: 1px solid var(--rule); padding: 5px 10px; border-radius: 0;
+    flex: 1; min-width: 160px;
+  }
+  .field.small { flex: 0 0 64px; min-width: 0; width: 64px; }
+  .field:focus-visible { outline: 2px solid var(--phosphor); outline-offset: 1px; }
+  .chip { font-size: 12px; padding: 1px 9px; border-style: dashed; color: var(--dim); }
+  .primary { background: var(--phosphor); border-color: var(--phosphor); color: var(--glass); padding: 6px 26px; }
+  .primary:hover { border-color: var(--text); }
+  .running {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    flex-wrap: wrap; border: 1px solid var(--phosphor); padding: 10px 14px; margin-bottom: 10px;
+  }
+  .big { font-size: 24px; color: var(--phosphor); font-variant-numeric: tabular-nums; line-height: 1.3; }
+  .small { font-size: 12px; }
+  .warn { color: var(--amber); }
+  .study label { cursor: pointer; }
+
   @media (max-width: 420px) {
     dl { grid-template-columns: 76px 1fr; }
   }
@@ -156,7 +183,7 @@
 <div class="wrap">
 
   <header>
-    <h1>catsole</h1>
+    <h1>catsole <a class="navlink" href="/study">study page &rarr;</a></h1>
     <div class="link-state"><span class="dot" id="dot"></span><span id="linkText">connecting</span></div>
   </header>
 
@@ -171,6 +198,65 @@
     <button data-mode="clock" aria-pressed="false">clock</button>
     <button id="btn-refresh">refresh now</button>
   </div>
+
+  <section class="study" aria-labelledby="study-title">
+    <h2 id="study-title">study</h2>
+
+    <div id="s-setup">
+      <div class="srow">
+        <input id="s-subject" class="field" maxlength="60" autocomplete="off"
+               placeholder="what are you studying?" aria-label="subject">
+      </div>
+      <div class="srow" id="s-recent"></div>
+      <div class="srow">
+        <span class="lbl">timer</span>
+        <button data-timer="countdown" aria-pressed="true">countdown</button>
+        <button data-timer="countup" aria-pressed="false">count up</button>
+      </div>
+      <div class="srow" id="s-length">
+        <span class="lbl">length</span>
+        <button data-min="15" aria-pressed="false">15</button>
+        <button data-min="25" aria-pressed="true">25</button>
+        <button data-min="45" aria-pressed="false">45</button>
+        <button data-min="60" aria-pressed="false">60</button>
+        <input id="s-min" class="field small" inputmode="numeric" placeholder="min" aria-label="minutes">
+      </div>
+      <div class="srow spread">
+        <button id="s-start" class="primary">start</button>
+        <span class="muted small" id="s-today"></span>
+      </div>
+    </div>
+
+    <div id="s-run" hidden>
+      <div class="running">
+        <div>
+          <div class="muted small" id="s-what"></div>
+          <div class="big" id="s-time">--</div>
+        </div>
+        <div class="srow" style="margin:0">
+          <button id="s-pause">pause</button>
+          <button id="s-add5">+5 min</button>
+          <button id="s-yes" hidden>yes, still studying</button>
+          <button id="s-stop">stop</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="srow" id="s-note-row" hidden>
+      <span class="lbl">note</span>
+      <input id="s-note" class="field" maxlength="200" autocomplete="off"
+             placeholder="what did you get done? (optional, saved with the session)" aria-label="note">
+    </div>
+
+    <p class="small" id="s-msg" hidden></p>
+
+    <div class="srow muted small">
+      <span>daily goal</span>
+      <input id="s-goal" class="field small" inputmode="numeric" aria-label="daily goal in minutes">
+      <span>min</span>
+      <label><input type="checkbox" id="s-chime"> chime when time's up</label>
+    </div>
+  </section>
 
   <dl>
     <dt>playing</dt><dd id="v-track" class="muted">nothing yet</dd>
@@ -496,6 +582,7 @@
   function apply(data) {
     state = data;
     lastOk = Date.now();
+    applyStudy(data.study);
 
     var connected = data.link && data.link.connected;
     document.getElementById("dot").className = "dot " + (connected ? "up" : "down");
@@ -545,6 +632,195 @@
                   : "CPU temperature needs LibreHardwareMonitor running. Everything else is live.")
       : "No device on any port. Check the cable, or start the service with --no-serial.";
   }
+
+  // ---- study block ----------------------------------------------------
+
+  var study = { timer: "countdown", minutes: 25, noteFor: null, noteTimer: 0,
+                noteError: false, goalTimer: 0 };
+
+  function post(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); });
+  }
+
+  function hm(min) {
+    min = Math.round(min);
+    var h = Math.floor(min / 60), m = min % 60;
+    return h ? h + "h " + (m < 10 ? "0" : "") + m + "m" : m + "m";
+  }
+
+  function clockText(secs) {
+    secs = Math.max(0, Math.floor(secs));
+    var h = Math.floor(secs / 3600), m = Math.floor(secs / 60) % 60, s = secs % 60;
+    var mm = (m < 10 ? "0" : "") + m, ss = (s < 10 ? "0" : "") + s;
+    return h ? h + ":" + mm + ":" + ss : mm + ":" + ss;
+  }
+
+  function pressGroup(selector, match) {
+    document.querySelectorAll(selector).forEach(function (b) {
+      b.setAttribute("aria-pressed", String(match(b)));
+    });
+  }
+
+  function chooseTimer(timer) {
+    study.timer = timer;
+    pressGroup("button[data-timer]", function (b) { return b.dataset.timer === timer; });
+    document.getElementById("s-length").hidden = timer !== "countdown";
+  }
+
+  function chooseMinutes(min) {
+    study.minutes = min;
+    pressGroup("button[data-min]", function (b) { return Number(b.dataset.min) === min; });
+    var box = document.getElementById("s-min");
+    if ([15, 25, 45, 60].indexOf(min) < 0) box.value = min; else box.value = "";
+  }
+
+  function showMessage(text, warn) {
+    var el = document.getElementById("s-msg");
+    el.hidden = !text;
+    el.textContent = text || "";
+    el.classList.toggle("warn", !!warn);
+  }
+
+  function applyStudy(st) {
+    if (!st) return;
+    var active = st.active;
+    document.getElementById("s-setup").hidden = !!active;
+    document.getElementById("s-run").hidden = !active;
+
+    var today = "today " + hm(st.today_min || 0);
+    if (st.streak) today += " \u00b7 " + st.streak + " day streak";
+    document.getElementById("s-today").textContent = today;
+
+    var recent = document.getElementById("s-recent");
+    var names = (st.recent || []).map(function (r) { return r.subject; }).join("\n");
+    if (recent.dataset.names !== names) {
+      recent.dataset.names = names;
+      recent.textContent = "";
+      (st.recent || []).slice(0, 5).forEach(function (r) {
+        var b = document.createElement("button");
+        b.className = "chip";
+        b.textContent = r.subject;
+        b.addEventListener("click", function () {
+          document.getElementById("s-subject").value = r.subject;
+          chooseTimer(r.timer === "countup" ? "countup" : "countdown");
+          if (r.minutes) chooseMinutes(r.minutes);
+        });
+        recent.appendChild(b);
+      });
+    }
+
+    if (active) {
+      var label = active.subject + " \u00b7 " +
+        (active.timer === "countdown" ? "countdown " + Math.round(active.planned_s / 60) + "m" : "count up");
+      if (active.state === "paused") label += " \u00b7 paused";
+      document.getElementById("s-what").textContent = label;
+      document.getElementById("s-time").textContent =
+        clockText(active.timer === "countdown" ? Math.ceil(active.left_s) : active.studied_s);
+      document.getElementById("s-pause").textContent = active.state === "paused" ? "resume" : "pause";
+      document.getElementById("s-pause").hidden = active.state === "asking";
+      document.getElementById("s-add5").hidden = active.timer !== "countdown" || active.state === "asking";
+      document.getElementById("s-yes").hidden = active.state !== "asking";
+    }
+
+    // The note belongs to the running session, or to the one that just
+    // ended until the next one starts.
+    var noteFor = active ? "active:" + active.started + active.subject
+                : st.last && st.last.note_editable ? "last:" + st.last.subject + st.last.studied_min : null;
+    var noteRow = document.getElementById("s-note-row");
+    var noteBox = document.getElementById("s-note");
+    noteRow.hidden = !noteFor;
+    if (noteFor !== study.noteFor) {
+      study.noteFor = noteFor;
+      study.noteError = false;
+      noteBox.value = (!active && st.last && st.last.note) || "";
+    }
+
+    if (study.noteError) {
+      showMessage("Couldn't save the note: the last row in study.csv was changed by hand.", true);
+    } else if (st.save_error) {
+      showMessage("study.csv is open in another app; it will save when that's closed.", true);
+    } else if (st.discarded && !active) {
+      showMessage("Under a minute, so it wasn't saved.", false);
+    } else if (!active && st.last && st.last.reason === "no_answer") {
+      showMessage("Nobody answered \u201cstill studying?\u201d, so it stopped there.", false);
+    } else if (!active && st.last && st.last.reason === "pause_limit") {
+      showMessage("Paused for 30 minutes, so it ended there.", false);
+    } else {
+      showMessage("", false);
+    }
+
+    var goal = document.getElementById("s-goal");
+    if (document.activeElement !== goal) goal.value = st.goal_min;
+    document.getElementById("s-chime").checked = !!st.chime;
+  }
+
+  document.querySelectorAll("button[data-timer]").forEach(function (b) {
+    b.addEventListener("click", function () { chooseTimer(b.dataset.timer); });
+  });
+  document.querySelectorAll("button[data-min]").forEach(function (b) {
+    b.addEventListener("click", function () { chooseMinutes(Number(b.dataset.min)); });
+  });
+  document.getElementById("s-min").addEventListener("input", function (e) {
+    var v = parseInt(e.target.value, 10);
+    if (v > 0) {
+      study.minutes = v;
+      pressGroup("button[data-min]", function (b) { return Number(b.dataset.min) === v; });
+    }
+  });
+
+  function startStudy() {
+    var subject = document.getElementById("s-subject").value.trim();
+    if (!subject) {
+      showMessage("What are you studying?", true);
+      document.getElementById("s-subject").focus();
+      return;
+    }
+    post("/api/study/start", {
+      subject: subject,
+      timer: study.timer,
+      minutes: study.timer === "countdown" ? study.minutes : null
+    }).then(function (r) {
+      if (r.error) showMessage(r.error, true);
+      poll();
+    });
+  }
+  document.getElementById("s-start").addEventListener("click", startStudy);
+  document.getElementById("s-subject").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") startStudy();
+  });
+
+  function control(action) {
+    post("/api/study/control", { action: action }).then(poll);
+  }
+  document.getElementById("s-pause").addEventListener("click", function (e) {
+    control(e.target.textContent === "resume" ? "resume" : "pause");
+  });
+  document.getElementById("s-add5").addEventListener("click", function () { control("add5"); });
+  document.getElementById("s-stop").addEventListener("click", function () { control("stop"); });
+  document.getElementById("s-yes").addEventListener("click", function () { control("yes"); });
+
+  document.getElementById("s-note").addEventListener("input", function (e) {
+    clearTimeout(study.noteTimer);
+    var text = e.target.value;
+    study.noteTimer = setTimeout(function () {
+      post("/api/study/note", { note: text }).then(function (r) { study.noteError = !r.ok; });
+    }, 600);
+  });
+
+  document.getElementById("s-goal").addEventListener("input", function (e) {
+    clearTimeout(study.goalTimer);
+    var v = parseInt(e.target.value, 10);
+    study.goalTimer = setTimeout(function () {
+      if (v >= 5 && v <= 1440) post("/api/settings", { daily_goal_min: v });
+    }, 600);
+  });
+  document.getElementById("s-chime").addEventListener("change", function (e) {
+    post("/api/settings", { chime: e.target.checked });
+  });
 
   function poll() {
     fetch("/api/state")
