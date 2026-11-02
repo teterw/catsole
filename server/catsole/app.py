@@ -360,10 +360,7 @@ class DeskConsole:
         return self._days_cache[1]
 
     def _distracted(self) -> bool:
-        raw = self._raw_media
-        # The artwork read belongs to the track on the lyrics screen.
-        same = raw is not None and raw.track_key == self._track_key
-        return is_distraction(raw, self._artwork if same else None)
+        return is_distraction(self._raw_media)
 
     def _study_showing(self) -> bool:
         """Whether the study screen holds the display: a session, or the

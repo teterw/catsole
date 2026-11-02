@@ -285,19 +285,16 @@ def netflix_kind(now_playing: "NowPlaying | None") -> str | None:
     return None
 
 
-def is_distraction(now_playing: "NowPlaying | None", artwork: tuple[int, int] | None) -> bool:
+def is_distraction(now_playing: "NowPlaying | None") -> bool:
     """Whether a video site is playing: what the cat side-eyes during study.
 
-    Netflix, a YouTube video (not music), Facebook or Instagram. Reels and
-    stories count too, though the lyrics screen ignores them as too short.
+    Netflix, Facebook or Instagram. Reels and stories count too, though the
+    lyrics screen ignores them as too short. YouTube does not: the user
+    studies from YouTube lessons.
     """
     if now_playing is None or not now_playing.is_playing:
         return False
-    return (
-        netflix_kind(now_playing) == "watch"
-        or tab_site(now_playing) is not None
-        or is_youtube_video(now_playing, artwork)
-    )
+    return netflix_kind(now_playing) == "watch" or tab_site(now_playing) is not None
 
 
 def netflix_show(now_playing: "NowPlaying") -> str:

@@ -252,13 +252,15 @@ While the "still studying?" question (part 1) is up, key 2 answers yes.
 
 ## 4. Distraction side-eye
 
-During a session, if a video site is **playing** — Netflix, YouTube
-(a video, not music: the existing `is_youtube_video` test), Facebook or
+During a session, if a video site is **playing** — Netflix, Facebook or
 Instagram, as the service already detects — the cat on the study screen
 switches to a side-eye pose until it stops. Each time it starts counts as
 one distraction; its duration adds to `distraction_min`. Brief interruptions
 already absorbed by the 15 s hold in `app.py` don't count. The timer keeps
 running — it's a nudge, not a penalty.
+
+*Amended 2026-11-02:* YouTube was taken out after the build. The user
+studies from YouTube lessons, so it is never a distraction.
 
 ## 5. Cat mood follows the streak
 

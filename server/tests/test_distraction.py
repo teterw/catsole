@@ -21,24 +21,30 @@ def np(**kw):
 WIDE = (1280, 720)
 
 
-@pytest.mark.parametrize("session, artwork", [
-    (np(title="Instagram"), None),
-    (np(title="(3) Facebook"), None),
-    (np(title="Netflix"), None),
-    (np(title="A video", artist="A channel", duration_ms=600_000), WIDE),
+@pytest.mark.parametrize("session", [
+    np(title="Instagram"),
+    np(title="(3) Facebook"),
+    np(title="Netflix"),
 ])
-def test_video_sites_are_distractions(session, artwork):
-    assert is_distraction(session, artwork)
+def test_video_sites_are_distractions(session):
+    assert is_distraction(session)
 
 
-@pytest.mark.parametrize("session, artwork", [
-    (np(title="Instagram", is_playing=False), None),
-    (np(title="A Song", artist="A Band", album="An Album", duration_ms=200_000), (500, 500)),
-    (np(title="Home - Netflix"), None),
-    (None, None),
+@pytest.mark.parametrize("session", [
+    np(title="Instagram", is_playing=False),
+    np(title="A Song", artist="A Band", album="An Album", duration_ms=200_000),
+    np(title="Home - Netflix"),
+    None,
 ])
-def test_other_sessions_are_not(session, artwork):
-    assert not is_distraction(session, artwork)
+def test_other_sessions_are_not(session):
+    assert not is_distraction(session)
+
+
+def test_youtube_lessons_are_not_distractions():
+    # The user studies from YouTube lessons, so YouTube never counts.
+    lesson = np(title="สรุปตัวแปรสุ่ม ตอนที่ 1 | คณิตศาสตร์ ม.6", artist="ครูนก ติวฟรีออนไลน์",
+                duration_ms=1_800_000)
+    assert not is_distraction(lesson)
 
 
 def test_side_eye_and_count_during_study(console, clock):

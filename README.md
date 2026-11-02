@@ -412,7 +412,7 @@ in Excel:
 | `planned_min` | the countdown's length; empty for count up |
 | `studied_min` | time counted, which is what every total uses |
 | `paused_min` | time spent paused |
-| `distractions`, `distraction_min` | video sites played during it |
+| `distractions`, `distraction_min` | Netflix, Facebook or Instagram played during it (not YouTube, which is for lessons) |
 | `note` | what you got done |
 
 Rows are only ever added, so fixing one by hand is safe while catsole runs.
