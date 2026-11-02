@@ -21,6 +21,7 @@ from datetime import date, datetime
 from . import chime as chime_module
 from . import studystats
 from .audio import AudioLevels
+from .claude import ClaudeMonitor
 from .config import Config
 from .hotkeys import Hotkeys
 from .hardware import HardwareReader, empty_stats
@@ -52,7 +53,9 @@ from .thai import warm_up as warm_up_thai
 
 log = logging.getLogger(__name__)
 
-MODES = ("lyrics", "stats", "clock")
+MODES = ("lyrics", "stats", "clock", "claude")
+# Screens that join the rotation only while there is something to show.
+OPTIONAL_MODES = frozenset({"claude"})
 
 # How long a playing song outlasts something else taking the media session.
 # In the service log, half of those interruptions were over within 3.4s and
@@ -91,13 +94,19 @@ def _crop_bitmap(width: int, data: bytes, max_width: int) -> tuple[int, bytes]:
     return max_width, b"".join(data[r * old:r * old + new] for r in range(rows))
 
 
-def next_mode(current: str) -> str:
-    """Advance to the next mode, recovering to the first on anything odd."""
-    try:
-        index = MODES.index(current)
-    except ValueError:
-        return MODES[0]
-    return MODES[(index + 1) % len(MODES)]
+def next_mode(current: str, available: set | frozenset | None = None) -> str:
+    """Advance to the next mode, recovering to the first on anything odd.
+
+    An optional screen is skipped unless it is in available."""
+    shown = [m for m in MODES if m not in OPTIONAL_MODES or (available and m in available)]
+    if current not in shown:
+        try:
+            index = MODES.index(current)
+        except ValueError:
+            return shown[0]
+        later = [m for m in MODES[index + 1:] if m in shown]
+        return later[0] if later else shown[0]
+    return shown[(shown.index(current) + 1) % len(shown)]
 
 
 class DeskConsole:
@@ -111,6 +120,7 @@ class DeskConsole:
         hardware=None,
         lyrics_provider=None,
         settings: UserSettings | None = None,
+        claude: ClaudeMonitor | None = None,
     ):
         self.config = config
         self.link = link if link is not None else SerialLink(
@@ -145,6 +155,8 @@ class DeskConsole:
         )
         self.study.restore()
         self.chime = chime_module.play
+        # Only run.py points this at ~/.claude, so tests never read it.
+        self.claude = claude if claude is not None else ClaudeMonitor(None)
         # The countdown the "done!" screen is showing, and until when.
         self._done: dict | None = None
         self._done_until = 0.0
@@ -606,12 +618,49 @@ class DeskConsole:
             frame = self._clock_frame()
         elif self.mode == "stats":
             frame = self._stats_frame()
+        elif self.mode == "claude":
+            frame = self._claude_frame()
         else:
             frame = self._lyrics_frame()
         self._add_menu(frame)
         # The cat's mood rides on every frame: 0 sulky .. 3 proud.
         frame["md"] = studystats.mood(self._study_days(), self._today())
         return frame
+
+    def _available_modes(self) -> set[str]:
+        return {"claude"} if self.claude.active() else set()
+
+    def _claude_frame(self) -> dict:
+        now = self.claude.clock()
+        limits = self.claude.limits()
+        msgs, tokens = self.claude.today()
+
+        def reset(epoch):
+            if epoch is None or epoch <= now:
+                return "--"
+            left = int(epoch - now)
+            if left < 3600:
+                return f"{left // 60}m"
+            if left < 86400:
+                return f"{left // 3600}h{(left % 3600) // 60:02d}"
+            return datetime.fromtimestamp(epoch).strftime("%a").lower()
+
+        if tokens < 1000:
+            tok = str(tokens)
+        elif tokens < 1_000_000:
+            tok = f"{round(tokens / 1000)}k"
+        else:
+            tok = f"{tokens / 1_000_000:.1f}M"
+        return {
+            "t": "frame",
+            "mode": "claude",
+            "cs": self.claude.state(),
+            "p5": limits["p5"],
+            "r5": reset(limits["r5"]),
+            "p7": limits["p7"],
+            "r7": reset(limits["r7"]),
+            "td": f"{msgs} msgs {tok} tok",
+        }
 
     def _stats_frame(self) -> dict:
         cpu = self.stats.get("cpu", {})
@@ -930,7 +979,7 @@ class DeskConsole:
             # Rotation pauses while busy too, so the stats stay put.
             if not playing and not self._busy:
                 if now >= self._rotate_at:
-                    self.mode = next_mode(self.mode)
+                    self.mode = next_mode(self.mode, self._available_modes())
                     log.debug("idle rotation -> %s", self.mode)
                     self.push_frame()
                     # The dwell belongs to the screen being shown, not the
@@ -947,6 +996,7 @@ class DeskConsole:
         self.audio.start()
         if hasattr(self.hardware, "start"):
             self.hardware.start()
+        self.claude.start()
         # Loading the Thai dictionary takes a quarter of a second; do it now,
         # off the loop, rather than as a stall on the first Thai line.
         threading.Thread(target=warm_up_thai, name="thai-warm-up", daemon=True).start()
@@ -983,6 +1033,13 @@ class DeskConsole:
             pass
 
     # ---- introspection for the web panel ---------------------------------
+
+    def _claude_snapshot(self) -> dict | None:
+        state = self.claude.state()
+        if state == "idle":
+            return None
+        msgs, tokens = self.claude.today()
+        return {"state": state, **self.claude.limits(), "msgs": msgs, "tokens": tokens}
 
     def _study_snapshot(self) -> dict:
         last = self.study.last
@@ -1045,6 +1102,7 @@ class DeskConsole:
             else self.lyrics.kind,
             "stats": self.stats,
             "study": self._study_snapshot(),
+            "claude": self._claude_snapshot(),
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
             "busy": self._busy,
             "audio": {

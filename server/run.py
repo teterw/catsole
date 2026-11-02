@@ -18,6 +18,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from catsole.app import MODES, DeskConsole
+from catsole.claude import ClaudeMonitor
 from catsole.config import DEFAULT_DATA_DIR, Config
 from catsole.link import NullLink, SerialLink, find_port
 
@@ -83,7 +84,8 @@ def build_console(args) -> DeskConsole:
     # DeskConsole builds its own SerialLink when link is None, because the
     # link needs the console's event handler to exist first.
     link = NullLink(echo=args.once) if args.no_serial else None
-    return DeskConsole(config, link=link)
+    claude = ClaudeMonitor(Path.home() / ".claude" / "projects")
+    return DeskConsole(config, link=link, claude=claude)
 
 
 def main(argv=None) -> int:

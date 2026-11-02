@@ -93,6 +93,20 @@ def create_app(console) -> Flask:
     def study_summary():
         return jsonify(console.study_summary())
 
+    # ---- Claude Code's status line and hooks --------------------------------
+
+    @app.post("/api/claude/status")
+    def claude_status():
+        body = request.get_json(silent=True, force=True) or {}
+        console.claude.on_status(body if isinstance(body, dict) else {})
+        return jsonify({"ok": True})
+
+    @app.post("/api/claude/event")
+    def claude_event():
+        body = request.get_json(silent=True, force=True) or {}
+        console.claude.on_event(body if isinstance(body, dict) else {})
+        return jsonify({"ok": True})
+
     @app.post("/api/settings")
     def settings():
         body = request.get_json(silent=True) or {}

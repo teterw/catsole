@@ -440,6 +440,40 @@ app (Ctrl+F11 is Code::Blocks' Rebuild, Ctrl+F12 VS Code's Go to
 Implementations), which Windows can't warn about. If another program has
 already claimed a combo the panel says it is taken.
 
+## Claude usage
+
+While Claude Code is open on the PC, a **claude** screen joins the
+rotation (and has a mode button on the panel): your plan's 5-hour and
+weekly limits as bars with the time until each resets, today's replies
+and tokens, and the cat typing while Claude works or waiting with a `?`
+when it's your turn.
+
+The limits come from Claude Code's status line, which is handed them after
+each reply; `server/claude/statusline.py` passes them on to catsole and
+prints `5h 42% · wk 18%` at the bottom of the terminal. Working and waiting
+come from hooks, through `server/claude/hook.py`. Today's counts are read
+from Claude Code's own transcripts in `~/.claude/projects` (tokens are
+input, output and cache writes; cache reads are left out). Add this to
+`~/.claude/settings.json`, with your path to the repo, keeping any hooks
+already there:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "python \"C:/path/to/catsole/server/claude/statusline.py\""
+  },
+  "hooks": {
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python \"C:/path/to/catsole/server/claude/hook.py\"", "timeout": 5}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python \"C:/path/to/catsole/server/claude/hook.py\"", "timeout": 5}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "python \"C:/path/to/catsole/server/claude/hook.py\"", "timeout": 5}]}]
+  }
+}
+```
+
+Both scripts use only Python's standard library, give up after 0.3 s, and
+exit quietly when catsole isn't running, so they never hold Claude up.
+
 ## When the PC goes away
 
 There is no RTC and no network, so a disconnected device cannot know the time
