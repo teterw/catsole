@@ -51,6 +51,17 @@ def test_summary_endpoint_empty(client):
     assert client.get("/api/study/summary").json["total_min"] == 0
 
 
+def test_study_page_served(client):
+    r = client.get("/study")
+    assert r.status_code == 200 and b'id="heat"' in r.data
+
+
+def test_summary_with_mangled_log(client, tmp_path):
+    (tmp_path / "study.csv").write_text(
+        "date,studied_min\n2026-11-01,abc\n\n2026-11-01,30\n", encoding="utf-8")
+    assert client.get("/api/study/summary").json["total_min"] == 30
+
+
 def test_settings_endpoint(client, console):
     r = client.post("/api/settings", json={"daily_goal_min": 90, "chime": False})
     assert r.status_code == 200 and r.json["settings"]["daily_goal_min"] == 90

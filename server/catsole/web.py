@@ -30,6 +30,10 @@ def create_app(console) -> Flask:
     def index():
         return send_from_directory(STATIC_DIR, "panel.html")
 
+    @app.get("/study")
+    def study_page():
+        return send_from_directory(STATIC_DIR, "study.html")
+
     @app.get("/api/state")
     def state():
         payload = console.snapshot()

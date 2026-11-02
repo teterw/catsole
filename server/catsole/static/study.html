@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>catsole study</title>
+<style>
+  :root {
+    --ink: #16191d;
+    --glass: #06080a;
+    --rule: #2b3037;
+    --text: #c8ccd2;
+    --dim: #6b747f;
+    --phosphor: #b8e8ff;
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, "DejaVu Sans Mono",
+            ui-monospace, monospace;
+    /* the heatmap's five steps of one colour, empty to most */
+    --h0: #12171c; --h1: #24414f; --h2: #3f7389; --h3: #74aec6; --h4: #b8e8ff;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 820px; margin: 0 auto; padding: 28px 16px 56px; }
+
+  header {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--rule); margin-bottom: 22px;
+  }
+  h1 { margin: 0; font-size: 13px; font-weight: 600; }
+  nav a { color: var(--dim); text-decoration: none; margin-left: 14px; }
+  nav a:hover, nav a[aria-current] { color: var(--phosphor); }
+
+  h2 { font-size: 12px; color: var(--dim); font-weight: 400; margin: 0 0 8px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 26px; }
+  .tile { border: 1px solid var(--rule); padding: 10px 12px; }
+  .tile .k { color: var(--dim); font-size: 12px; }
+  .tile .v { font-size: 22px; color: var(--phosphor); font-variant-numeric: tabular-nums; line-height: 1.3; }
+  .tile .d { color: var(--dim); font-size: 12px; }
+
+  .heat-wrap { overflow-x: auto; padding-bottom: 4px; }
+  .heat {
+    display: grid; grid-template-columns: 28px repeat(53, 11px);
+    grid-template-rows: 14px repeat(7, 11px); gap: 2px; width: max-content;
+  }
+  .cell { width: 11px; height: 11px; border-radius: 2px; background: var(--h0); }
+  .cell:hover { outline: 1px solid var(--text); }
+  .mlab, .dlab { color: var(--dim); font-size: 10px; line-height: 11px; white-space: nowrap; }
+  .legend { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            flex-wrap: wrap; color: var(--dim); font-size: 12px; margin-top: 8px; }
+  .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin: 0 1px; vertical-align: middle; }
+  .tip { position: fixed; pointer-events: none; background: var(--glass); border: 1px solid var(--rule);
+         padding: 4px 8px; font-size: 12px; display: none; z-index: 5; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 28px; }
+  @media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+
+  .bar { height: 8px; background: var(--h0); border-radius: 0 4px 4px 0; position: relative; }
+  .bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--phosphor); border-radius: 0 4px 4px 0; }
+  .subj { display: grid; grid-template-columns: 90px 1fr 70px; gap: 10px; align-items: center; margin-bottom: 6px; }
+  .subj > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .subj .n { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .weeks { display: flex; align-items: flex-end; gap: 2px; height: 90px; border-bottom: 1px solid var(--rule); }
+  .weeks i { flex: 1; background: var(--h3); border-radius: 4px 4px 0 0; min-height: 1px; }
+  .weeks i.now { background: var(--phosphor); }
+  .axis { color: var(--dim); font-size: 12px; display: flex; justify-content: space-between; }
+
+  .miles { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
+  .miles span { border: 1px solid var(--rule); padding: 0 6px; color: var(--dim); }
+  .miles span.got { border-color: var(--h3); color: var(--text); }
+  .miles span.plain { border: 0; padding: 0; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td { padding: 5px 0; border-top: 1px solid var(--rule); vertical-align: top; }
+  td.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .muted { color: var(--dim); }
+  .empty { color: var(--dim); font-size: 12px; }
+  .gap { margin-top: 22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>catsole</h1>
+    <nav><a href="/">panel</a><a href="/study" aria-current="page">study</a></nav>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>last 12 months</h2>
+  <div class="heat-wrap"><div class="heat" id="heat" role="img" aria-label="Minutes studied each day"></div></div>
+  <div class="legend">
+    <span id="year-sum"></span>
+    <span>less
+      <span class="sw" style="background:var(--h0)"></span><span class="sw" style="background:var(--h1)"></span><span class="sw" style="background:var(--h2)"></span><span class="sw" style="background:var(--h3)"></span><span class="sw" style="background:var(--h4)"></span>
+      more</span>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>how far you've come</h2>
+      <div class="subj"><span>total</span><div class="bar"><i id="mile-bar"></i></div><span class="n" id="mile-txt"></span></div>
+      <div class="miles" id="miles"></div>
+
+      <h2 class="gap">hours per week, last 12 weeks</h2>
+      <div class="weeks" id="weeks"></div>
+      <div class="axis"><span>12 weeks ago</span><span>this week</span></div>
+    </div>
+    <div>
+      <h2>by subject, all time</h2>
+      <div id="subjects"></div>
+
+      <h2 class="gap">recent sessions</h2>
+      <table id="recent"></table>
+    </div>
+  </div>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var MONTHS = "jan feb mar apr may jun jul aug sep oct nov dec".split(" ");
+  var DAYS = "sun mon tue wed thu fri sat".split(" ");
+  var MILESTONES = [10, 25, 50, 100, 250, 500, 1000];
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  function hm(min) {
+    min = Math.round(min || 0);
+    var h = Math.floor(min / 60), m = min % 60;
+    if (!h) return m + "m";
+    return m ? h + "h " + pad(m) + "m" : h + "h";
+  }
+
+  function iso(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+
+  function level(min) {
+    if (!min) return 0;
+    if (min < 40) return 1;
+    if (min < 80) return 2;
+    if (min < 130) return 3;
+    return 4;
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function tiles(s) {
+    var diff = s.week_min - s.last_week_min;
+    var list = [
+      ["total", hm(s.total_min), s.sessions + (s.sessions === 1 ? " session" : " sessions")],
+      ["this week", hm(s.week_min), (diff >= 0 ? "+" : "-") + hm(Math.abs(diff)) + " vs last week"],
+      ["streak", s.streak + (s.streak === 1 ? " day" : " days"), "best " + s.best_streak + (s.best_streak === 1 ? " day" : " days")],
+      ["today", hm(s.today_min), "goal " + hm(s.goal_min)]
+    ];
+    var box = document.getElementById("tiles");
+    box.textContent = "";
+    list.forEach(function (t) {
+      var tile = el("div", "tile");
+      tile.appendChild(el("div", "k", t[0]));
+      tile.appendChild(el("div", "v", t[1]));
+      tile.appendChild(el("div", "d", t[2]));
+      box.appendChild(tile);
+    });
+  }
+
+  // Weeks run down the columns, Sunday on top, ending with this week.
+  function heatmap(s) {
+    var heat = document.getElementById("heat");
+    heat.textContent = "";
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    var start = new Date(today); start.setDate(today.getDate() - today.getDay() - 52 * 7);
+
+    heat.appendChild(el("div"));
+    var lastMonth = -1;
+    for (var col = 0; col < 53; col++) {
+      var first = new Date(start); first.setDate(start.getDate() + col * 7);
+      var label = "";
+      if (first.getMonth() !== lastMonth && first.getDate() <= 7) {
+        label = MONTHS[first.getMonth()];
+        lastMonth = first.getMonth();
+      }
+      var m = el("div", "mlab", label);
+      m.style.gridColumn = col + 2; m.style.gridRow = 1;
+      heat.appendChild(m);
+    }
+    ["", "mon", "", "wed", "", "fri", ""].forEach(function (l, r) {
+      var d = el("div", "dlab", l);
+      d.style.gridColumn = 1; d.style.gridRow = r + 2;
+      heat.appendChild(d);
+    });
+
+    var studied = 0, total = 0;
+    for (var c = 0; c < 53; c++) {
+      for (var r = 0; r < 7; r++) {
+        var day = new Date(start); day.setDate(start.getDate() + c * 7 + r);
+        if (day > today) continue;
+        var min = s.days[iso(day)] || 0;
+        if (min) { studied++; total += min; }
+        var cell = el("div", "cell");
+        cell.style.gridColumn = c + 2; cell.style.gridRow = r + 2;
+        cell.style.background = "var(--h" + level(min) + ")";
+        cell.dataset.tip = (min ? hm(min) : "nothing") + " on " + DAYS[day.getDay()] + " " +
+                           day.getDate() + " " + MONTHS[day.getMonth()];
+        heat.appendChild(cell);
+      }
+    }
+    document.getElementById("year-sum").textContent = studied
+      ? hm(total) + " over " + studied + (studied === 1 ? " day" : " days") + " in the last year"
+      : "nothing logged yet: start a session on the panel";
+  }
+
+  function progress(s) {
+    var hours = s.total_min / 60;
+    var next = s.milestone.next;
+    var prev = 0;
+    MILESTONES.forEach(function (m) { if (m <= hours) prev = m; });
+    document.getElementById("mile-bar").style.width =
+      (next ? Math.min(100, (hours - prev) / (next - prev) * 100) : 100) + "%";
+    document.getElementById("mile-txt").textContent = Math.floor(hours) + (next ? "/" + next + "h" : "h");
+
+    var miles = document.getElementById("miles");
+    miles.textContent = "";
+    MILESTONES.forEach(function (m) {
+      var got = m <= hours;
+      miles.appendChild(el("span", got ? "got" : "", (got ? "✓ " : "") + m + "h"));
+    });
+    if (next) {
+      miles.appendChild(el("span", "plain muted", s.milestone.eta_weeks
+        ? "next: " + next + "h in about " + s.milestone.eta_weeks + (s.milestone.eta_weeks === 1 ? " week" : " weeks") + " at this pace"
+        : "next: " + next + "h"));
+    }
+
+    var weeks = document.getElementById("weeks");
+    weeks.textContent = "";
+    var most = Math.max.apply(null, s.weeks.concat([1]));
+    s.weeks.forEach(function (v, i) {
+      var bar = el("i", i === s.weeks.length - 1 ? "now" : "");
+      bar.style.height = Math.max(1, v / most * 100) + "%";
+      bar.dataset.tip = hm(v) + (i === s.weeks.length - 1 ? " in the last 7 days" : ", " + (s.weeks.length - 1 - i) + " weeks back");
+      weeks.appendChild(bar);
+    });
+  }
+
+  function subjects(s) {
+    var box = document.getElementById("subjects");
+    box.textContent = "";
+    if (!s.subjects.length) { box.appendChild(el("p", "empty", "no subjects yet")); return; }
+    var most = s.subjects[0][1] || 1;
+    s.subjects.forEach(function (row) {
+      var line = el("div", "subj");
+      var name = el("span", "", row[0]);
+      name.title = row[0];
+      line.appendChild(name);
+      var bar = el("div", "bar"), fill = el("i");
+      fill.style.width = (row[1] / most * 100) + "%";
+      bar.appendChild(fill);
+      line.appendChild(bar);
+      line.appendChild(el("span", "n", hm(row[1])));
+      box.appendChild(line);
+    });
+  }
+
+  function recent(s) {
+    var table = document.getElementById("recent");
+    table.textContent = "";
+    if (!s.recent.length) {
+      var tr0 = el("tr"), td0 = el("td", "empty", "nothing yet");
+      tr0.appendChild(td0); table.appendChild(tr0);
+      return;
+    }
+    var todayIso = iso(new Date());
+    s.recent.forEach(function (r) {
+      var tr = el("tr");
+      var when = r.date === todayIso ? "today " + r.start.slice(0, 5) : r.date.slice(5) + " " + r.start.slice(0, 5);
+      tr.appendChild(el("td", "muted", when));
+      var what = el("td", "", r.subject);
+      if (r.note) what.title = r.note;
+      tr.appendChild(what);
+      tr.appendChild(el("td", "muted", r.timer === "countdown" ? Math.round(r.planned_min) + "m countdown" : "count up"));
+      tr.appendChild(el("td", "r", hm(parseFloat(r.studied_min))));
+      table.appendChild(tr);
+    });
+  }
+
+  function load() {
+    fetch("/api/study/summary")
+      .then(function (r) { return r.json(); })
+      .then(function (s) { tiles(s); heatmap(s); progress(s); subjects(s); recent(s); })
+      .catch(function () { /* service down; try again on the next round */ });
+  }
+
+  var tip = document.getElementById("tip");
+  document.addEventListener("mousemove", function (e) {
+    var t = e.target && e.target.dataset && e.target.dataset.tip;
+    if (!t) { tip.style.display = "none"; return; }
+    tip.textContent = t;
+    tip.style.display = "block";
+    tip.style.left = Math.min(e.clientX + 12, window.innerWidth - 220) + "px";
+    tip.style.top = (e.clientY + 12) + "px";
+  });
+
+  load();
+  setInterval(load, 30000);
+})();
+</script>
+</body>
+</html>
