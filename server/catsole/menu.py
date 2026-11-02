@@ -11,8 +11,23 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from .protocol import fold_ascii
+from .textbitmap import needs_bitmap
+
 MENU_IDLE_S = 6.0
 RECENT_IN_MENU = 3
+# What fits inside the highlight bar at 6px a character.
+LABEL_MAX = 15
+
+
+def _label(subject: str, suffix: str) -> str:
+    """Subject and timer, the subject cut short so the timer -- the one
+    thing telling two entries apart -- always shows."""
+    room = LABEL_MAX - len(suffix) - 1
+    folded = fold_ascii(subject)
+    if needs_bitmap(subject) or len(folded) <= room:
+        return f"{subject} {suffix}"
+    return f"{folded[:room - 1]}~ {suffix}"
 
 
 @dataclass(frozen=True)
@@ -31,7 +46,7 @@ def build_items(view: dict | None, recent: list[dict]) -> list[MenuItem]:
             timer = r.get("timer") or "countup"
             minutes = r.get("minutes") if timer == "countdown" else None
             suffix = f"{minutes}m" if minutes else "up"
-            items.append(MenuItem(f"{r.get('subject', '')} {suffix}", "start",
+            items.append(MenuItem(_label(r.get("subject", ""), suffix), "start",
                                   r.get("subject", ""), timer, minutes))
         return items + [MenuItem("close", "close")]
 

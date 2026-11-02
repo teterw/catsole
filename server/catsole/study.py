@@ -65,11 +65,31 @@ class _Session:
 
     @classmethod
     def from_dict(cls, data: dict) -> "_Session | None":
+        """A saved session, or None if the file holds anything unexpected."""
         known = {f.name for f in fields(cls)}
         try:
-            return cls(**{k: v for k, v in data.items() if k in known})
+            s = cls(**{k: v for k, v in data.items() if k in known})
         except TypeError:
             return None
+
+        def number(v):
+            return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+        required = ("started", "last_tick", "studied_s", "paused_s", "next_ask",
+                    "studied_at_ask", "distractions", "distraction_s")
+        optional = ("planned_s", "pause_began", "paused_since", "asked_at",
+                    "dist_start", "dist_last")
+        if not all(number(getattr(s, f)) for f in required):
+            return None
+        if not all(getattr(s, f) is None or number(getattr(s, f)) for f in optional):
+            return None
+        if s.timer not in TIMERS or s.state not in ("running", "paused", "asking"):
+            return None
+        if s.timer == "countdown" and not s.planned_s:
+            return None
+        if not isinstance(s.subject, str) or not isinstance(s.note, str):
+            return None
+        return s
 
 
 @dataclass

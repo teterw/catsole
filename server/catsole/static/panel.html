@@ -1337,8 +1337,16 @@
     }
     else if (["study", "study up", "paused", "ask", "done"].indexOf(scene) >= 0) sceneStudy(t, scene);
     else if (scene === "menu") {
-      sceneStudy(t, "study");
-      drawMenu(lx, { mi: ["pause", "+5 min", "stop", "close"], ms: Math.floor(t / 1200) % 4 });
+      // The menu during a session, then the one between sessions, with
+      // subjects long enough to be cut short.
+      if (t % 9600 < 4800) {
+        sceneStudy(t, "study");
+        drawMenu(lx, { mi: ["pause", "+5 min", "stop", "close"], ms: Math.floor(t / 1200) % 4 });
+      } else {
+        drawClockScreen(lx, { time: "21:30", sec: "12", date: "mon 02 nov", state: "idle" });
+        drawMenu(lx, { mi: ["linear alg~ 25m", "organic che~ up", "math 45m", "close"],
+                       ms: Math.floor(t / 1200) % 4 });
+      }
     }
     else if (scene === "clock") {
       var n = new Date();

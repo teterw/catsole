@@ -2,17 +2,18 @@
 prints them for the bottom of the terminal.
 
 Claude Code runs this with a JSON on stdin after each reply. It must stay
-fast and quiet: a catsole that isn't running costs a refused connection,
-nothing more. Standard library only, so it runs with any Python.
+fast and quiet: catsole leaves a port file in its data folder while its
+panel is up, and without one the network is not touched at all. Standard
+library only, so it runs with any Python.
 
     "statusLine": {"type": "command",
                    "command": "python \"<repo>/server/claude/statusline.py\""}
 """
 
 import json
-import os
 import sys
-import urllib.request
+
+from catsole_link import post
 
 
 def main() -> None:
@@ -21,14 +22,7 @@ def main() -> None:
         payload = json.loads(raw)
     except ValueError:
         return
-    port = os.environ.get("CATSOLE_PORT", "8730")
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/claude/status", raw.encode("utf-8"),
-            {"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=0.3).close()
-    except Exception:
-        pass
+    post("/api/claude/status", raw)
 
     limits = payload.get("rate_limits") if isinstance(payload, dict) else None
     parts = []

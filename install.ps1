@@ -62,8 +62,10 @@ function Remove-CatsoleDir([string]$path, [string[]]$keep) {
     $kept = @()
     foreach ($child in Get-ChildItem -LiteralPath $path -Force) {
         if ($keep -contains $child.Name) { $kept += $child.Name; continue }
+        # A file still held open (a log another copy is writing) is left
+        # behind, as rmdir would, rather than stopping the uninstall.
         if ($child.PSIsContainer) { Remove-Tree $child.FullName }
-        else { Remove-Item -LiteralPath $child.FullName -Force }
+        else { Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue }
     }
     if (-not $kept) { Remove-Tree $path }
     return $kept

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from datetime import date, datetime
@@ -34,14 +35,27 @@ SCAN_EVERY_S = 60
 
 
 def _epoch(value) -> float | None:
+    """Seconds since 1970 from a number or an ISO string, or None.
+
+    Milliseconds are taken for what they are; anything not finite, or
+    outside 2001..2096, is refused rather than allowed to reach the screen.
+    """
+    if isinstance(value, bool):
+        return None
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str) and value:
+        seconds = float(value)
+    elif isinstance(value, str) and value:
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            seconds = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
         except ValueError:
             return None
-    return None
+    else:
+        return None
+    if not math.isfinite(seconds):
+        return None
+    if seconds > 1e11:
+        seconds /= 1000
+    return seconds if 1e9 <= seconds <= 4e9 else None
 
 
 class ClaudeMonitor:
@@ -49,7 +63,7 @@ class ClaudeMonitor:
         self.projects_dir = Path(projects_dir) if projects_dir else None
         self.clock = clock
         self._lock = threading.Lock()
-        # session id -> {"working": bool, "seen": epoch}
+        # session id -> {"working", "seen": any news, "work_seen": last hook}
         self._sessions: dict[str, dict] = {}
         self._limits = {"p5": None, "r5": None, "p7": None, "r7": None}
         # Today's transcript reading, carried between scans.
@@ -63,7 +77,8 @@ class ClaudeMonitor:
     # ---- what Claude Code tells us -------------------------------------------
 
     def _session(self, session_id: str) -> dict:
-        return self._sessions.setdefault(session_id or "?", {"working": False, "seen": 0.0})
+        return self._sessions.setdefault(
+            session_id or "?", {"working": False, "seen": 0.0, "work_seen": 0.0})
 
     def on_status(self, payload: dict) -> None:
         with self._lock:
@@ -76,8 +91,8 @@ class ClaudeMonitor:
                 if not isinstance(block, dict):
                     continue
                 pct = block.get("used_percentage")
-                if isinstance(pct, (int, float)):
-                    self._limits["p" + name] = int(round(pct))
+                if isinstance(pct, (int, float)) and not isinstance(pct, bool) and math.isfinite(pct):
+                    self._limits["p" + name] = int(round(min(100.0, max(0.0, float(pct)))))
                 reset = _epoch(block.get("resets_at"))
                 if reset is not None:
                     self._limits["r" + name] = reset
@@ -90,10 +105,14 @@ class ClaudeMonitor:
                 self._sessions.pop(session_id or "?", None)
                 return
             session = self._session(session_id)
-            session["seen"] = self.clock()
+            # Only hooks speak to working: the status line runs after Esc too,
+            # and would keep a cut-short turn "working" for ever.
+            session["seen"] = session["work_seen"] = self.clock()
             if event == "UserPromptSubmit":
                 session["working"] = True
-            elif event == "Stop":
+            elif event in ("Stop", "Notification"):
+                # Notification: Claude is asking for permission, or has sat
+                # waiting for input (which is where Esc leaves it).
                 session["working"] = False
 
     # ---- what the screen asks -------------------------------------------------
@@ -102,7 +121,7 @@ class ClaudeMonitor:
         now = self.clock()
         with self._lock:
             sessions = list(self._sessions.values())
-        if any(s["working"] and now - s["seen"] < WORK_STALE_S for s in sessions):
+        if any(s["working"] and now - s["work_seen"] < WORK_STALE_S for s in sessions):
             return "work"
         if any(now - s["seen"] < ACTIVE_S for s in sessions):
             return "wait"

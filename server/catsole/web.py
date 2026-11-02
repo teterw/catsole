@@ -7,6 +7,7 @@ would not be fine on 0.0.0.0.
 
 from __future__ import annotations
 
+import atexit
 import logging
 from dataclasses import asdict
 from pathlib import Path
@@ -20,6 +21,7 @@ from .hotkeys import format_combo, parse_combo
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+PORT_FILE = "catsole.port"
 
 
 def create_app(console) -> Flask:
@@ -98,13 +100,14 @@ def create_app(console) -> Flask:
 
     @app.post("/api/claude/status")
     def claude_status():
-        body = request.get_json(silent=True, force=True) or {}
+        # JSON only: a web page can send text/plain here without asking.
+        body = request.get_json(silent=True) or {}
         console.claude.on_status(body if isinstance(body, dict) else {})
         return jsonify({"ok": True})
 
     @app.post("/api/claude/event")
     def claude_event():
-        body = request.get_json(silent=True, force=True) or {}
+        body = request.get_json(silent=True) or {}
         console.claude.on_event(body if isinstance(body, dict) else {})
         return jsonify({"ok": True})
 
@@ -151,9 +154,28 @@ def create_app(console) -> Flask:
     return app
 
 
+def write_port_file(console) -> None:
+    """Tell Claude Code's scripts where the panel is, and that it is up.
+
+    They skip the network when the file is missing, so a closed catsole
+    costs a prompt nothing rather than a refused connection's timeout."""
+    data_dir = console.config.data_dir
+    if data_dir is None:
+        return
+    path = Path(data_dir) / PORT_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(console.config.web_port), encoding="utf-8")
+    except OSError as exc:
+        log.warning("could not write %s: %s", path, exc)
+        return
+    atexit.register(lambda: path.unlink(missing_ok=True))
+
+
 def serve(console) -> None:
     """Run the panel. Called on a daemon thread from run.py."""
     app = create_app(console)
+    write_port_file(console)
     try:
         app.run(
             host=console.config.web_host,

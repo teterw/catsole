@@ -9,6 +9,7 @@ what they could not write.
 
 from __future__ import annotations
 
+import codecs
 import copy
 import csv
 import io
@@ -16,6 +17,7 @@ import json
 import locale
 import logging
 import os
+import re
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -26,6 +28,38 @@ COLUMNS = [
     "date", "start", "end", "subject", "timer", "planned_min", "studied_min",
     "paused_min", "distractions", "distraction_min", "note",
 ]
+
+
+_SHORT_DATE = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$")
+
+
+def _parse_date(text) -> date | None:
+    """ISO as written, or the short date Excel puts back when it saves.
+
+    Excel rewrites dates in the system's own format: 11/2/2026 (month
+    first) on an English system, 2/11/2569 (day first, Buddhist year) on a
+    Thai one. A day over 12 settles the order whatever the year.
+    """
+    text = str(text or "").strip()
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        pass
+    m = _SHORT_DATE.match(text)
+    if not m:
+        return None
+    a, b, year = (int(g) for g in m.groups())
+    if year > 2400:
+        year -= 543
+        day, month = a, b
+    elif a > 12:
+        day, month = a, b
+    else:
+        month, day = a, b
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
 
 
 def _minutes(value: float) -> str:
@@ -75,9 +109,8 @@ class LoggedSession:
         Only the date and the minutes studied are essential; a hand edit
         that mangles anything else still leaves a row worth counting.
         """
-        try:
-            day = date.fromisoformat(str(row.get("date") or "").strip())
-        except ValueError:
+        day = _parse_date(row.get("date"))
+        if day is None:
             return None
         studied = _float(row.get("studied_min"), None)
         if studied is None:
@@ -101,12 +134,25 @@ class LoggedSession:
         )
 
 
-def _decode(raw: bytes) -> str:
-    """UTF-8 as written, or the system code page if Excel re-saved it."""
+def _decode(raw: bytes) -> tuple[str, bool]:
+    """The file's text, and whether all of it was UTF-8.
+
+    Excel can save in the system code page, and rows appended after that
+    are UTF-8 again, so each line is decoded on its own."""
     try:
-        return raw.decode("utf-8-sig")
+        return raw.decode("utf-8-sig"), True
     except UnicodeDecodeError:
-        return raw.decode(locale.getpreferredencoding(False), errors="replace")
+        pass
+    fallback = locale.getpreferredencoding(False)
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8):]
+    lines = []
+    for line in raw.split(b"\n"):
+        try:
+            lines.append(line.decode("utf-8"))
+        except UnicodeDecodeError:
+            lines.append(line.decode(fallback, errors="replace"))
+    return "\n".join(lines), False
 
 
 class StudyLog:
@@ -121,6 +167,21 @@ class StudyLog:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             size = self.path.stat().st_size if self.path.exists() else 0
+            fieldnames = COLUMNS
+            if size:
+                # Never add UTF-8 to a file in another encoding: convert it.
+                text, utf8 = _decode(self.path.read_bytes())
+                # Rows go in under the file's own header, so columns moved
+                # or removed by hand stay lined up.
+                header = next(csv.reader(io.StringIO(text, newline="")), [])
+                header = [h.strip() for h in header]
+                if "date" in header and "studied_min" in header:
+                    fieldnames = header
+                if not utf8:
+                    tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+                    tmp.write_text(text, encoding="utf-8-sig", newline="")
+                    os.replace(tmp, self.path)
+                    size = self.path.stat().st_size
             needs_newline = False
             if size:
                 with open(self.path, "rb") as f:
@@ -132,7 +193,7 @@ class StudyLog:
             with open(self.path, "a", encoding=encoding, newline="") as f:
                 if needs_newline:
                     f.write("\r\n")
-                writer = csv.DictWriter(f, fieldnames=COLUMNS)
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
                 if not size:
                     writer.writeheader()
                 writer.writerow(session.to_row())
@@ -152,7 +213,7 @@ class StudyLog:
         return (st.st_mtime_ns, st.st_size)
 
     def _rows(self) -> list[list[str]]:
-        text = _decode(self.path.read_bytes())
+        text, _ = _decode(self.path.read_bytes())
         return list(csv.reader(io.StringIO(text, newline="")))
 
     def read(self) -> list[LoggedSession]:

@@ -1966,6 +1966,8 @@ static void drawMenu() {
   u8g2.drawBox(12, top - 2, 104, h + 4);
   u8g2.setDrawColor(1);
   u8g2.drawFrame(14, top, 100, h);
+  /* The PC fits labels to the box; this keeps anything wider inside it. */
+  u8g2.setClipWindow(15, top + 1, 113, top + h - 1);
   u8g2.setFont(u8g2_font_6x12_tf);
   for (uint8_t i = 0; i < menuCount; i++) {
     uint8_t y = top + 2 + i * rowH;
@@ -1980,6 +1982,7 @@ static void drawMenu() {
     }
     u8g2.setDrawColor(1);
   }
+  u8g2.setMaxClipWindow();
 }
 
 static void drawNightClock() {

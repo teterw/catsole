@@ -164,6 +164,7 @@ class DeskConsole:
         self._done: dict | None = None
         self._done_until = 0.0
         self._days_cache: tuple = (None, {})
+        self._tick_error_at = 0.0
 
         # The shortcut menu. The hotkey thread presses it, so it has a lock.
         self.menu = StudyMenu()
@@ -998,6 +999,19 @@ class DeskConsole:
                 self._rotate_at = now + self._hold_for(self.mode)
         return False
 
+    def tick_safely(self) -> None:
+        """One tick, where a fault is logged rather than ending the service.
+
+        Study files, settings and Claude's numbers all reach the frame from
+        outside; one bad value should cost a frame, not the display."""
+        try:
+            self.tick()
+        except Exception:
+            now = time.monotonic()
+            if now - self._tick_error_at >= 60:
+                self._tick_error_at = now
+                log.exception("tick failed; carrying on")
+
     def run(self) -> None:
         self.link.start()
         self.audio.start()
@@ -1011,7 +1025,7 @@ class DeskConsole:
         log.info("catsole running; mode=%s", self.mode)
         try:
             while not self._stop.is_set():
-                self.tick()
+                self.tick_safely()
                 # Short enough that the 20Hz spectrum gate is not
                 # quantised by the loop's own sleep.
                 time.sleep(0.015)

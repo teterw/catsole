@@ -23,17 +23,20 @@ MODIFIER_ORDER = ("ctrl", "alt", "shift", "win")
 
 WM_HOTKEY, WM_QUIT, WM_APP = 0x0312, 0x0012, 0x8000
 
-# Keys that may stand alone; letters and digits need a modifier, or the
-# shortcut would swallow ordinary typing.
-_SPECIAL = {
-    "pause": 0x13, "scrolllock": 0x91, "home": 0x24, "end": 0x23,
-    "insert": 0x2D, "delete": 0x2E, "pageup": 0x21, "pagedown": 0x22,
+# Only keys nobody presses for anything else may stand alone. The rest need
+# a modifier: a bare Delete or F5 registered globally would stop working
+# in every program.
+_ALONE = {"pause": 0x13, "scrolllock": 0x91}
+_ALONE.update({f"f{n}": 0x70 + n - 1 for n in range(13, 25)})
+_PLAIN = {
+    "home": 0x24, "end": 0x23, "insert": 0x2D, "delete": 0x2E,
+    "pageup": 0x21, "pagedown": 0x22,
 }
-_SPECIAL.update({f"f{n}": 0x70 + n - 1 for n in range(1, 25)})
-_SPECIAL.update({f"numpad{n}": 0x60 + n for n in range(10)})
-_PLAIN = {chr(c): ord(chr(c).upper()) for c in range(ord("a"), ord("z") + 1)}
+_PLAIN.update({f"f{n}": 0x70 + n - 1 for n in range(1, 13)})
+_PLAIN.update({f"numpad{n}": 0x60 + n for n in range(10)})
+_PLAIN.update({chr(c): ord(chr(c).upper()) for c in range(ord("a"), ord("z") + 1)})
 _PLAIN.update({str(n): ord(str(n)) for n in range(10)})
-_NAMES = {vk: name for name, vk in {**_SPECIAL, **_PLAIN}.items()}
+_NAMES = {vk: name for name, vk in {**_ALONE, **_PLAIN}.items()}
 
 
 def parse_combo(text: str) -> tuple[int, int]:
@@ -47,8 +50,8 @@ def parse_combo(text: str) -> tuple[int, int]:
         if m not in MODIFIERS:
             raise ValueError(f"unknown modifier: {m}")
         flags |= MODIFIERS[m]
-    if key in _SPECIAL:
-        return flags, _SPECIAL[key]
+    if key in _ALONE:
+        return flags, _ALONE[key]
     if key in _PLAIN and flags:
         return flags, _PLAIN[key]
     raise ValueError(f"not a key catsole can use: {key}")

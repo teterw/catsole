@@ -142,10 +142,12 @@ def test_claude_web_routes(console, clock):
     assert c.get("/api/state").json["claude"]["state"] == "work"
 
 
-def run_script(name, payload):
+def run_script(name, payload, data_dir=None):
+    # A data folder of its own, so the live service's port file is never found.
+    env = {**os.environ, "CATSOLE_DIR": str(data_dir or Path(__file__).parent / "no-such-dir")}
     return subprocess.run(
         [sys.executable, str(SCRIPTS / name)], input=json.dumps(payload), capture_output=True,
-        text=True, encoding="utf-8", timeout=5, env={**os.environ, "CATSOLE_PORT": "1"})
+        text=True, encoding="utf-8", timeout=5, env=env)
 
 
 def test_statusline_script_without_service():

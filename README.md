@@ -434,7 +434,10 @@ with the timer you last used for it; during a session it offers pause or
 resume, +5 min, and stop. It closes by itself after 6 seconds. A new
 subject still needs the panel.
 
-Change the keys on the panel: click a box and press the combo. A shortcut
+Change the keys on the panel: click a box and press the combo. Pause,
+Scroll Lock and F13-F24 may be used on their own; every other key needs
+Ctrl, Alt, Shift or Win with it, so a shortcut never takes over a key you
+type with. A shortcut
 takes its keys from every program, including shortcuts that live inside an
 app (Ctrl+F11 is Code::Blocks' Rebuild, Ctrl+F12 VS Code's Go to
 Implementations), which Windows can't warn about. If another program has
@@ -451,7 +454,8 @@ when it's your turn.
 The limits come from Claude Code's status line, which is handed them after
 each reply; `server/claude/statusline.py` passes them on to catsole and
 prints `5h 42% · wk 18%` at the bottom of the terminal. Working and waiting
-come from hooks, through `server/claude/hook.py`. Today's counts are read
+come from hooks, through `server/claude/hook.py` (a `Notification` hook
+covers a turn cut short with Esc, which fires no `Stop`). Today's counts are read
 from Claude Code's own transcripts in `~/.claude/projects` (tokens are
 input, output and cache writes; cache reads are left out). Add this to
 `~/.claude/settings.json`, with your path to the repo, keeping any hooks
@@ -466,13 +470,16 @@ already there:
   "hooks": {
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python \"C:/path/to/catsole/server/claude/hook.py\"", "timeout": 5}]}],
     "Stop": [{"hooks": [{"type": "command", "command": "python \"C:/path/to/catsole/server/claude/hook.py\"", "timeout": 5}]}],
+    "Notification": [{"hooks": [{"type": "command", "command": "python \"C:/path/to/catsole/server/claude/hook.py\"", "timeout": 5}]}],
     "SessionEnd": [{"hooks": [{"type": "command", "command": "python \"C:/path/to/catsole/server/claude/hook.py\"", "timeout": 5}]}]
   }
 }
 ```
 
-Both scripts use only Python's standard library, give up after 0.3 s, and
-exit quietly when catsole isn't running, so they never hold Claude up.
+Both scripts use only Python's standard library and never hold Claude up:
+catsole leaves `catsole.port` in its data folder while its panel is up, and
+without it they don't touch the network at all; with it they give up after
+0.3 s and ignore any proxy settings.
 
 ## Weather on the clock
 
