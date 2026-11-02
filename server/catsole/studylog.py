@@ -141,6 +141,16 @@ class StudyLog:
             log.warning("could not write %s: %s", self.path, exc)
             return False
 
+    def signature(self) -> tuple:
+        """Changes whenever the log does, hand edits included."""
+        if self.path is None:
+            return ("memory", len(self._memory), id(self._memory[-1]) if self._memory else 0)
+        try:
+            st = self.path.stat()
+        except OSError:
+            return ("missing",)
+        return (st.st_mtime_ns, st.st_size)
+
     def _rows(self) -> list[list[str]]:
         text = _decode(self.path.read_bytes())
         return list(csv.reader(io.StringIO(text, newline="")))

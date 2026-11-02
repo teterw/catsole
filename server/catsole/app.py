@@ -12,11 +12,14 @@ it inline would stall frame output and visibly freeze the marquee.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 
+from . import chime as chime_module
+from . import studystats
 from .audio import AudioLevels
 from .config import Config
 from .hardware import HardwareReader, empty_stats
@@ -35,6 +38,9 @@ from .media import (
     tab_site,
 )
 from .protocol import fold_text
+from .settings import UserSettings
+from .study import StudyTimer
+from .studylog import StudyLog, StudyStore
 from .textbitmap import HEIGHT as TITLE_BITMAP_HEIGHT
 from .textbitmap import needs_bitmap
 from .textbitmap import render as render_title
@@ -62,6 +68,11 @@ ARTWORK_TRIES = 8
 # board that reset, or a line lost on the wire, soon has it back.
 TITLE_BITMAP_RESEND_S = 4.0
 
+# How long the "done!" screen stays up after a countdown runs out.
+DONE_HOLD_S = 7.0
+
+STUDY_ACTIONS = ("pause", "resume", "add5", "stop", "yes")
+
 
 def next_mode(current: str) -> str:
     """Advance to the next mode, recovering to the first on anything odd."""
@@ -82,6 +93,7 @@ class DeskConsole:
         media=None,
         hardware=None,
         lyrics_provider=None,
+        settings: UserSettings | None = None,
     ):
         self.config = config
         self.link = link if link is not None else SerialLink(
@@ -102,6 +114,22 @@ class DeskConsole:
         self.refresh_requested = False
         self.device_firmware = ""
         self.audio = AudioLevels()
+
+        # Study mode. With no data folder (the tests) nothing touches disk.
+        data_dir = config.data_dir
+        self.settings_path = data_dir / "settings.json" if data_dir else None
+        self.settings = settings if settings is not None else UserSettings.load(self.settings_path)
+        self.study = StudyTimer(
+            StudyLog(data_dir / "study.csv" if data_dir else None),
+            StudyStore(data_dir / "study_state.json" if data_dir else None),
+        )
+        self.study.restore()
+        self.chime = chime_module.play
+        # The countdown the "done!" screen is showing, and until when.
+        self._done: dict | None = None
+        self._done_until = 0.0
+        self._days_cache: tuple = (None, {})
+
         # Seeded a full interval out, so the configured start mode is
         # actually shown rather than rotated past on the first tick.
         self._rotate_at = time.monotonic() + float(
@@ -172,6 +200,75 @@ class DeskConsole:
         self.refresh_requested = True
         self._next_media = 0.0
         self._next_stats = 0.0
+
+    # ---- study mode ------------------------------------------------------
+
+    def study_start(self, subject: str, timer: str, minutes: int | None) -> bool:
+        if not self.study.start(subject, timer, minutes):
+            return False
+        self._done = None
+        self._done_until = 0.0
+        self.settings.touch_recent(
+            subject.strip(), timer, minutes if timer == "countdown" else None
+        )
+        self.save_settings()
+        self.push_frame()
+        return True
+
+    def study_control(self, action: str) -> bool:
+        handlers = {
+            "pause": self.study.pause,
+            "resume": self.study.resume,
+            "add5": lambda: self.study.add_minutes(5),
+            "yes": self.study.answer_yes,
+            "stop": lambda: self.study.stop() is not None,
+        }
+        handler = handlers.get(action)
+        if handler is None or not handler():
+            return False
+        self.push_frame()
+        return True
+
+    def study_note(self, text: str) -> bool:
+        return self.study.set_note(text)
+
+    def study_summary(self) -> dict:
+        return studystats.summarize(
+            self.study.log.read(), self._today(), self.settings.daily_goal_min
+        )
+
+    def save_settings(self) -> None:
+        self.settings.save(self.settings_path)
+
+    def _today(self) -> date:
+        """Today by the study clock, which is the wall clock outside tests."""
+        return datetime.fromtimestamp(self.study.clock()).date()
+
+    def _study_days(self) -> dict:
+        """Minutes per day from the log, read again only when it changes."""
+        key = (self.study.log.signature(), self._today())
+        if self._days_cache[0] != key:
+            self._days_cache = (key, studystats.daily_minutes(self.study.log.read()))
+        return self._days_cache[1]
+
+    def _study_showing(self) -> bool:
+        """Whether the study screen holds the display: a session, or the
+        "done!" screen just after one."""
+        return self.study.active or self.study.clock() < self._done_until
+
+    def _on_study_finished(self, finished) -> None:
+        if finished.reason != "done":
+            return
+        session = finished.session
+        self._done = {
+            "subject": session.subject if session else "",
+            "minutes": round(finished.studied_s / 60),
+            "rt": f"{round(session.planned_min)}m" if session and session.planned_min else "",
+        }
+        self._done_until = self.study.clock() + DONE_HOLD_S
+        if self.settings.chime:
+            self.chime()
+        self.push_frame()
 
     # ---- polling ---------------------------------------------------------
 
@@ -339,7 +436,73 @@ class DeskConsole:
             else "idle",
         }
 
+    def _study_frame(self) -> dict:
+        view = self.study.view()
+        days = self._study_days()
+        today = self._today()
+        frame = {"t": "frame", "mode": "study", "eye": 0, "wig": 0, "l1": "", "l2": ""}
+
+        if view is None:
+            # The "done!" screen, after a countdown ran out.
+            done = self._done or {}
+            frame.update(
+                meta=done.get("subject", ""),
+                rt=done.get("rt", ""),
+                time="",
+                sec="",
+                pg=1000,
+                st="done",
+                l1=f"{done.get('minutes', 0)} min",
+                l2=f"streak {studystats.streak(days, today)}d",
+            )
+            return frame
+
+        if view["timer"] == "countdown":
+            # Rounded up, so the last second reads 00:01 rather than 00:00.
+            shown = math.ceil(view["left_s"])
+            planned = view["planned_s"]
+            pg = min(1000, int(view["studied_s"] * 1000 / planned))
+            rt = f"{round(planned / 60)}m"
+            if view["state"] == "running" and shown <= 60:
+                frame["wig"] = 1
+        else:
+            shown = int(view["studied_s"])
+            # Count up walks toward the day's goal, counting what is already
+            # logged today.
+            goal = max(1, int(self.settings.daily_goal_min))
+            today_min = days.get(today, 0.0) + view["studied_s"] / 60
+            pg = min(1000, int(today_min * 1000 / goal))
+            rt = f"goal {goal // 60}h" if goal % 60 == 0 else f"goal {goal}m"
+
+        hours, rest = divmod(shown, 3600)
+        minutes, seconds = divmod(rest, 60)
+        if hours:
+            time_text, sec_text = f"{hours}:{minutes:02d}", f"{seconds:02d}"
+        else:
+            time_text, sec_text = f"{minutes:02d}:{seconds:02d}", ""
+
+        state = {"running": "run", "paused": "pause", "asking": "ask"}[view["state"]]
+        if state == "pause":
+            rt = "paused"
+        elif state == "ask":
+            rt = "still?"
+            frame["l1"] = "still studying?"
+            frame["l2"] = f"{self.settings.hotkey_pick} = yes"
+
+        frame.update(
+            meta=view["subject"],
+            rt=rt,
+            time=time_text,
+            sec=sec_text,
+            pg=pg,
+            st=state,
+            eye=1 if view["distracted"] else 0,
+        )
+        return frame
+
     def build_frame(self) -> dict:
+        if self._study_showing():
+            return self._study_frame()
         if self.mode == "clock":
             return self._clock_frame()
         if self.mode == "stats":
@@ -506,7 +669,7 @@ class DeskConsole:
         draw it, and point the frame at it. Thai has no face small enough
         for that strip on the board, so it used to vanish from it."""
         meta = frame.get("meta") or ""
-        if frame.get("mode") != "lyrics" or not needs_bitmap(meta):
+        if frame.get("mode") not in ("lyrics", "study") or not needs_bitmap(meta):
             return
         rendered = render_title(meta)
         if rendered is None:
@@ -562,11 +725,17 @@ class DeskConsole:
             self._send_rtc()
             self._next_rtc = now + self.config.rtc_sync_s
 
+        finished = self.study.tick()
+        if finished is not None:
+            self._on_study_finished(finished)
+        studying = self._study_showing()
+
         # Spectrum goes out far more often than full frames. A meter that
         # lags the music reads as broken, and the payload is tiny.
         if now >= self._next_eq:
             playing = (
                 self.mode == "lyrics"
+                and not studying
                 and self.now_playing is not None
                 and self.now_playing.is_playing
             )
@@ -596,6 +765,32 @@ class DeskConsole:
             and self.now_playing.is_playing
         ) or (self.audio.available and not self.audio.silent)
 
+        if studying:
+            # The study screen holds the display: no jumps and no rotation,
+            # which starts a full interval after it ends.
+            self._was_playing = playing
+            self._rotate_at = now + self._hold_for(self.mode)
+        elif self._auto_mode(now, playing):
+            return
+
+        if self.refresh_requested:
+            self.refresh_requested = False
+            # A hold on a track whose lyrics were not found is worth a retry.
+            if (
+                self.now_playing is not None
+                and not self.now_playing.is_empty
+                and self.lyrics.kind == "none"
+            ):
+                self._fetch_lyrics(self.now_playing)
+            self.push_frame()
+            return
+
+        if now >= self._next_frame:
+            self.push_frame()
+
+    def _auto_mode(self, now: float, playing: bool) -> bool:
+        """Pick the screen on its own: stats under load, lyrics when music
+        starts, rotation when idle. True when the tick should end here."""
         # A machine under load is worth looking at, so the screen jumps to
         # stats when it starts working hard and holds there until it
         # settles. Hysteresis keeps load hovering near the line from
@@ -615,7 +810,7 @@ class DeskConsole:
                 log.info("load %.0f%% -> stats", peak_load)
                 self.push_frame()
                 self._was_playing = playing
-                return
+                return True
 
         # Music starting pulls the screen back to the lyrics, unless a mode
         # was hand-picked recently.
@@ -640,21 +835,7 @@ class DeskConsole:
                 # Keep the timer fresh so rotation starts a full
                 # interval after the music stops, not immediately.
                 self._rotate_at = now + self._hold_for(self.mode)
-
-        if self.refresh_requested:
-            self.refresh_requested = False
-            # A hold on a track whose lyrics were not found is worth a retry.
-            if (
-                self.now_playing is not None
-                and not self.now_playing.is_empty
-                and self.lyrics.kind == "none"
-            ):
-                self._fetch_lyrics(self.now_playing)
-            self.push_frame()
-            return
-
-        if now >= self._next_frame:
-            self.push_frame()
+        return False
 
     def run(self) -> None:
         self.link.start()
@@ -698,6 +879,30 @@ class DeskConsole:
 
     # ---- introspection for the web panel ---------------------------------
 
+    def _study_snapshot(self) -> dict:
+        last = self.study.last
+        days = self._study_days()
+        today = self._today()
+        return {
+            "active": self.study.view(),
+            # The last session keeps its note box until the next one starts.
+            "last": None if last is None or last.session is None else {
+                "subject": last.session.subject,
+                "studied_min": last.session.studied_min,
+                "reason": last.reason,
+                "note": last.session.note,
+                "note_editable": True,
+            },
+            "discarded": last is not None and last.session is None,
+            "today_min": round(days.get(today, 0.0), 1),
+            "streak": studystats.streak(days, today),
+            "goal_min": self.settings.daily_goal_min,
+            "recent": self.settings.recent,
+            "pending": self.study.pending_count,
+            "save_error": self.study.save_error,
+            "chime": self.settings.chime,
+        }
+
     def snapshot(self) -> dict:
         playing = self.now_playing
         return {
@@ -729,6 +934,7 @@ class DeskConsole:
             )
             else self.lyrics.kind,
             "stats": self.stats,
+            "study": self._study_snapshot(),
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
             "busy": self._busy,
             "audio": {
