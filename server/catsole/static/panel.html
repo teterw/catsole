@@ -301,6 +301,7 @@
     <button data-scene="ask">ask</button>
     <button data-scene="done">done</button>
     <button data-scene="menu">menu</button>
+    <button data-scene="claude">claude</button>
   </div>
 
   <div class="screen">
@@ -578,6 +579,8 @@
       drawClockScreen(ctx, state.frame);
     } else if (state.frame.mode === "study") {
       drawStudy(ctx, state.frame);
+    } else if (state.frame.mode === "claude") {
+      drawClaude(ctx, state.frame);
     } else {
       drawLyrics(state.frame, state.audio && state.audio.levels);
     }
@@ -1024,6 +1027,48 @@
     drawPawTrail(c, frame);
   }
 
+  // ---- Claude screen, mirroring drawClaude() ---------------------------
+
+  function claudeRow(c, baseline, label, value, pct) {
+    c.font = mono(7);
+    c.fillStyle = PHOSPHOR;
+    c.fillText(label, 2, baseline);
+    c.fillText(value, 24, baseline);
+    c.strokeStyle = PHOSPHOR; c.lineWidth = 1;
+    c.strokeRect(2.5, baseline + 2.5, 91, 5);
+    if (pct !== null && pct !== undefined) {
+      c.fillRect(4, baseline + 4, Math.round(Math.max(0, Math.min(100, pct)) / 100 * 88), 2);
+    }
+  }
+
+  function drawClaude(c, frame) {
+    var working = frame.cs === "work", waiting = frame.cs === "wait";
+    c.font = mono(7);
+    c.fillStyle = PHOSPHOR;
+    c.fillText("claude", 2, 8);
+    c.fillText(working ? "working" + ".".repeat(Math.floor(Date.now() / 400) % 4)
+               : waiting ? "your turn" : "idle", 52, 8);
+    c.fillRect(0, 10, W, 1);
+    var has5 = frame.p5 !== null && frame.p5 !== undefined;
+    var has7 = frame.p7 !== null && frame.p7 !== undefined;
+    claudeRow(c, 22, "5h", has5 ? frame.p5 + "% reset " + frame.r5 : "--", has5 ? frame.p5 : null);
+    claudeRow(c, 40, "wk", has7 ? frame.p7 + "% reset " + frame.r7 : "--", has7 ? frame.p7 : null);
+    c.font = mono(7);
+    c.fillText("today " + (frame.td || ""), 2, 61);
+    var high = (has5 && frame.p5 >= 90) || (has7 && frame.p7 >= 90);
+    drawCatArt(CAT[high ? 9 : labPose(false, false)], 99, 30, 6, 7, c, 4);
+    c.fillStyle = PHOSPHOR;
+    if (working) {
+      var tap = Math.floor(Date.now() / 140) % 3;
+      c.fillRect(100, 44, 26, 1);
+      c.fillRect(104 + tap * 2, 41 + (tap === 1 ? 1 : 0), 2, 2);
+      c.fillRect(116 - tap * 2, 41 + (tap === 2 ? 1 : 0), 2, 2);
+    } else if (waiting) {
+      c.font = mono(7);
+      c.fillText("?", 122, 26);
+    }
+  }
+
   // ---- the shortcut menu, mirroring drawMenu() ------------------------
 
   function drawMenu(c, frame) {
@@ -1208,6 +1253,11 @@
     else if (scene === "idle") sceneIdle();
     else if (scene === "poses") scenePoses();
     else if (scene === "moods") sceneMoods();
+    else if (scene === "claude") {
+      var phase = Math.floor(t / 4000) % 3;
+      drawClaude(lx, { cs: phase === 1 ? "wait" : "work", p5: phase === 2 ? 91 : 42, r5: "1h12",
+                       p7: phase === 2 ? 77 : 18, r7: "fri", td: "214 msgs 3.1M tok" });
+    }
     else if (["study", "study up", "paused", "ask", "done"].indexOf(scene) >= 0) sceneStudy(t, scene);
     else if (scene === "menu") {
       sceneStudy(t, "study");

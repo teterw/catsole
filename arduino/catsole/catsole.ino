@@ -175,6 +175,12 @@ struct Frame {
   char l1[24];
   char l2[24];
 
+  /* Claude screen */
+  char cs[6];       /* "work", "wait" or "idle" */
+  int16_t p5, p7;   /* 5-hour and weekly use in percent, -1 unknown */
+  char r5[8], r7[8];  /* time until each resets: "1h12", "fri" */
+  char td[28];      /* today: "214 msgs 3.1M tok" */
+
   float cpuTemp, cpuLoad, cpuClock;
   float gpuTemp, gpuLoad, vramUsed, vramTotal;
   float ramUsed, ramTotal, ramPercent;
@@ -529,6 +535,13 @@ static void handleLine(const char *line) {
   }
   menuSel = doc["ms"] | 0;
   catMood = doc["md"] | 1;
+
+  copyField(frame.cs, sizeof(frame.cs), doc["cs"] | "");
+  frame.p5 = doc["p5"].isNull() ? -1 : doc["p5"].as<int>();
+  frame.p7 = doc["p7"].isNull() ? -1 : doc["p7"].as<int>();
+  copyField(frame.r5, sizeof(frame.r5), doc["r5"] | "--");
+  copyField(frame.r7, sizeof(frame.r7), doc["r7"] | "--");
+  copyField(frame.td, sizeof(frame.td), doc["td"] | "");
 
   /* Absent sensors arrive as JSON null and must stay absent, not become 0. */
   frame.cpuTemp = doc["cpu"]["temp"].isNull() ? NAN : doc["cpu"]["temp"].as<float>();
@@ -1570,7 +1583,7 @@ static void fmtPairGB(char *out, size_t n, float usedMB, float totalMB) {
 /* One labelled row: name, a preformatted value, and a usage bar.
    Three rows share the band, so the pitch is 16 and bars are 5 tall. */
 static void drawStatRow(uint8_t baseline, const char *label, const char *value,
-                        float load) {
+                        float load, uint8_t barW = STAT_BAR_W) {
   u8g2.setFont(u8g2_font_5x7_tf);
   u8g2.drawUTF8(2, baseline, label);
   u8g2.drawUTF8(24, baseline, value);
@@ -1581,12 +1594,12 @@ static void drawStatRow(uint8_t baseline, const char *label, const char *value,
      touched both borders, so the bar read as one solid blob instead of a
      level inside a track. */
   const uint8_t barY = baseline + 2;
-  u8g2.drawFrame(2, barY, STAT_BAR_W, 6);
+  u8g2.drawFrame(2, barY, barW, 6);
   if (!isnan(load)) {
     float pct = load;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
-    uint8_t w = (uint8_t)((pct / 100.0f) * (STAT_BAR_W - 4));
+    uint8_t w = (uint8_t)((pct / 100.0f) * (barW - 4));
     if (w > 0) u8g2.drawBox(4, barY + 2, w, 2);
   }
 }
@@ -1842,6 +1855,52 @@ static void drawStudy() {
   drawPawTrail();
 }
 
+/* ---- Claude screen ----------------------------------------------------
+ *
+ * Laid out like the stats screen: the plan's 5-hour and weekly limits as
+ * bars, then today's replies and tokens. The cat types while Claude works
+ * and waits with a question mark when it's your turn. */
+
+static void drawClaude() {
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawUTF8(2, META_BASELINE, "claude");
+  bool working = strcmp(frame.cs, "work") == 0;
+  bool waiting = strcmp(frame.cs, "wait") == 0;
+  char buf[28];
+  if (working) {
+    strcpy(buf, "working");
+    uint8_t dots = (millis() / 400) % 4;
+    for (uint8_t i = 0; i < dots; i++) strcat(buf, ".");
+  } else {
+    strcpy(buf, waiting ? "your turn" : "idle");
+  }
+  u8g2.drawUTF8(52, META_BASELINE, buf);
+  u8g2.drawHLine(0, RULE_Y, SCREEN_W);
+
+  if (frame.p5 >= 0) snprintf(buf, sizeof(buf), "%d%% reset %s", frame.p5, frame.r5);
+  else strcpy(buf, "--");
+  drawStatRow(22, "5h", buf, frame.p5 >= 0 ? (float)frame.p5 : NAN, 92);
+  if (frame.p7 >= 0) snprintf(buf, sizeof(buf), "%d%% reset %s", frame.p7, frame.r7);
+  else strcpy(buf, "--");
+  drawStatRow(40, "wk", buf, frame.p7 >= 0 ? (float)frame.p7 : NAN, 92);
+
+  u8g2.setFont(u8g2_font_5x7_tf);
+  snprintf(buf, sizeof(buf), "today %s", frame.td);
+  u8g2.drawUTF8(2, 61, buf);
+
+  bool high = frame.p5 >= 90 || frame.p7 >= 90;
+  drawCat(99, 30, high ? CAT_WORRIED : catPose(false, false), u8g2_font_4x6_tf, 7);
+  if (working) {
+    /* Paws tapping on a keyboard below the cat. */
+    uint8_t tap = (millis() / 140) % 3;
+    u8g2.drawHLine(100, 44, 26);
+    u8g2.drawBox(104 + tap * 2, 41 + (tap == 1 ? 1 : 0), 2, 2);
+    u8g2.drawBox(116 - tap * 2, 41 + (tap == 2 ? 1 : 0), 2, 2);
+  } else if (waiting) {
+    u8g2.drawUTF8(122, 26, "?");
+  }
+}
+
 /* ---- the shortcut menu ------------------------------------------------ */
 
 static void blitItem(uint8_t i, uint8_t x0, uint8_t y0, uint8_t right) {
@@ -1944,6 +2003,7 @@ static void render() {
       if (strcmp(frame.mode, "stats") == 0) drawStats();
       else if (strcmp(frame.mode, "clock") == 0) drawClock();
       else if (strcmp(frame.mode, "study") == 0) drawStudy();
+      else if (strcmp(frame.mode, "claude") == 0) drawClaude();
       else drawLyrics();
       drawMenu();
       break;
