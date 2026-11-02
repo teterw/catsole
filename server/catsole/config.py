@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[1] / "cache"
+
+# Where the log, the study log and the panel's settings live.
+if os.name == "nt":
+    DEFAULT_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "catsole"
+else:
+    DEFAULT_DATA_DIR = Path(
+        os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
+    ) / "catsole"
 
 
 @dataclass
@@ -71,6 +80,9 @@ class Config:
 
     start_mode: str = "lyrics"
     cache_dir: Path = field(default_factory=lambda: DEFAULT_CACHE_DIR)
+    # The study log and the panel's settings. None keeps everything in
+    # memory, which is what the tests rely on; run.py fills it in.
+    data_dir: Path | None = None
     user_agent: str = "catsole/1.0 (https://github.com/teterw/catsole)"
 
     @classmethod
@@ -89,7 +101,7 @@ class Config:
             if not hasattr(config, key):
                 log.warning("ignoring unknown config key: %s", key)
                 continue
-            if key == "cache_dir":
+            if key in ("cache_dir", "data_dir") and value is not None:
                 value = Path(value)
             setattr(config, key, value)
         return config
@@ -97,4 +109,5 @@ class Config:
     def to_dict(self) -> dict:
         data = asdict(self)
         data["cache_dir"] = str(self.cache_dir)
+        data["data_dir"] = str(self.data_dir) if self.data_dir else None
         return data

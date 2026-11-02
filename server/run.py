@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -19,13 +18,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from catsole.app import MODES, DeskConsole
-from catsole.config import Config
+from catsole.config import DEFAULT_DATA_DIR, Config
 from catsole.link import NullLink, SerialLink, find_port
 
-if os.name == "nt":
-    LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "catsole"
-else:
-    LOG_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))) / "catsole"
+LOG_DIR = DEFAULT_DATA_DIR
 LOG_FILE = LOG_DIR / "catsole.log"
 
 
@@ -65,6 +61,8 @@ def parse_args(argv=None):
     parser.add_argument("--mode", choices=MODES, help="starting mode")
     parser.add_argument("--offset-ms", type=int, help="lyric timing offset")
     parser.add_argument("--web-port", type=int, help="control panel port")
+    parser.add_argument("--data-dir", type=Path,
+                        help="where the study log and panel settings live")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -80,6 +78,7 @@ def build_console(args) -> DeskConsole:
         config.lyric_offset_ms = args.offset_ms
     if args.web_port:
         config.web_port = args.web_port
+    config.data_dir = args.data_dir or config.data_dir or DEFAULT_DATA_DIR
 
     # DeskConsole builds its own SerialLink when link is None, because the
     # link needs the console's event handler to exist first.
