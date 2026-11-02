@@ -272,6 +272,13 @@
       set here now belongs to catsole.</p>
   </section>
 
+  <div class="srow muted small" style="margin-bottom:26px">
+    <span>weather city</span>
+    <input id="w-city" class="field" maxlength="60" autocomplete="off"
+           placeholder="for the clock screen, e.g. Bangkok" aria-label="weather city">
+    <span id="w-status"></span>
+  </div>
+
   <dl>
     <dt>playing</dt><dd id="v-track" class="muted">nothing yet</dd>
     <dt>position</dt><dd id="v-pos" class="muted">--</dd>
@@ -291,6 +298,7 @@
     <button data-scene="idle">idle</button>
     <button data-scene="lyrics">lyrics</button>
     <button data-scene="clock">clock</button>
+    <button data-scene="clock wx">clock wx</button>
     <button data-scene="stats">stats</button>
     <button data-scene="stale">no link</button>
     <button data-scene="poses">poses</button>
@@ -604,6 +612,7 @@
     state = data;
     lastOk = Date.now();
     applyStudy(data.study);
+    applyWeather(data.weather);
 
     var connected = data.link && data.link.connected;
     document.getElementById("dot").className = "dot " + (connected ? "up" : "down");
@@ -895,6 +904,33 @@
     post("/api/settings", { chime: e.target.checked });
   });
 
+  function applyWeather(w) {
+    if (!w) return;
+    var box = document.getElementById("w-city");
+    if (document.activeElement !== box && !box.dataset.error) box.value = w.city || "";
+    if (!box.dataset.error) {
+      document.getElementById("w-status").textContent = w.now
+        ? w.now.temp + "\u00b0C" + (w.now.rain !== null ? ", rain " + w.now.rain + "%" : "")
+        : (w.city ? "fetching\u2026" : "");
+    }
+  }
+
+  function saveCity() {
+    var box = document.getElementById("w-city");
+    post("/api/settings", { weather_city: box.value.trim() }).then(function (r) {
+      box.dataset.error = r.error ? "1" : "";
+      document.getElementById("w-status").textContent = r.error || "";
+      if (!r.error) box.blur();
+      poll();
+    });
+  }
+  document.getElementById("w-city").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") saveCity();
+  });
+  document.getElementById("w-city").addEventListener("input", function (e) {
+    e.target.dataset.error = "";
+  });
+
   function poll() {
     fetch("/api/state")
       .then(function (r) { return r.json(); })
@@ -922,18 +958,51 @@
   var spinFan = 0;
   var catPhase = 0, catPhaseMs = Date.now();
 
+  var WX_ICONS = [
+    [".....##.....", "..#..##..#..", "...#....#...", "....####....", "...######...", "##.######.##", "##.######.##", "...######...", "....####....", "...#....#...", "..#..##..#..", ".....##....."],
+    ["............", "............", "....###.....", "...#...#....", ".##.....##..", "#.........#.", "#..........#", "#..........#", ".##########.", "............", "............", "............"],
+    ["....###.....", "...#...#....", ".##.....##..", "#.........#.", "#..........#", ".##########.", "............", "..#...#...#.", ".#...#...#..", "............", "..#...#...#.", ".#...#...#.."],
+    ["....###.....", "...#...#....", ".##.....##..", "#.........#.", "#..........#", ".###...####.", "....#.......", "...###......", ".....#......", "....#.......", "...#........", "............"]
+  ];
+
+  function drawWxIcon(c, x, y, icon) {
+    var rows = WX_ICONS[icon - 1];
+    if (!rows) return;
+    c.fillStyle = PHOSPHOR;
+    for (var r = 0; r < 12; r++)
+      for (var k = 0; k < 12; k++)
+        if (rows[r][k] === "#") c.fillRect(x + k, y + r, 1, 1);
+  }
+
+  // Mirrors drawClock(): the cat top right, the time large, seconds beside
+  // the date, and a column for the weather (or the board's own numbers).
   function drawClockScreen(c, frame) {
     if (!frame.time) return;
-    drawCatArt(CAT[labPose(frame.state === "playing", false)], 98, 9, 6, 6, c, 4);
+    drawCatArt(CAT[labPose(frame.state === "playing", false)], 84, 10, 10, 12, c, 6);
 
     c.fillStyle = PHOSPHOR;
     c.font = "24px " + getComputedStyle(document.body).fontFamily;
-    c.fillText(frame.time, 4, 44);
-    var w = c.measureText(frame.time).width;
-    c.font = mono(10);
-    c.fillText(frame.sec || "", 8 + w, 44);
+    c.fillText(frame.time, 4, 48);
     c.font = mono(7);
-    c.fillText(frame.date || "", 5, 58);
+    var date = frame.date || "";
+    c.fillText(date, 5, 60);
+    c.fillText(frame.sec || "", 5 + date.length * 5 + 8, 60);
+    c.fillRect(82, 28, 1, 30);
+    if (frame.wi) {
+      drawWxIcon(c, 86, 28, frame.wi);
+      c.fillStyle = PHOSPHOR;
+      c.font = mono(7);
+      c.fillText(frame.wt + "C", 101, 37);
+      if (frame.wr !== null && frame.wr !== undefined) {
+        c.font = mono(5);
+        c.fillText("rain " + frame.wr + "%", 86, 50);
+      }
+    } else {
+      c.font = mono(5);
+      c.fillText("mcu", 86, 34);
+      c.fillText("up", 86, 42);
+      c.fillText("fps", 86, 50);
+    }
   }
 
   // ---- study screen, mirroring drawStudy() ----------------------------
@@ -1253,6 +1322,14 @@
     else if (scene === "idle") sceneIdle();
     else if (scene === "poses") scenePoses();
     else if (scene === "moods") sceneMoods();
+    else if (scene === "clock wx") {
+      var n2 = new Date();
+      drawClockScreen(lx, {
+        time: ("0" + n2.getHours()).slice(-2) + ":" + ("0" + n2.getMinutes()).slice(-2),
+        sec: ("0" + n2.getSeconds()).slice(-2),
+        date: n2.toDateString().slice(0, 10).toLowerCase(), state: "idle",
+        wt: 31, wi: Math.floor(t / 2000) % 4 + 1, wr: 60 });
+    }
     else if (scene === "claude") {
       var phase = Math.floor(t / 4000) % 3;
       drawClaude(lx, { cs: phase === 1 ? "wait" : "work", p5: phase === 2 ? 91 : 42, r5: "1h12",

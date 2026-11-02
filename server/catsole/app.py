@@ -50,6 +50,7 @@ from .textbitmap import needs_bitmap
 from .textbitmap import render as render_title
 from .thai import mark_word_breaks
 from .thai import warm_up as warm_up_thai
+from .weather import WeatherReader
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +158,8 @@ class DeskConsole:
         self.chime = chime_module.play
         # Only run.py points this at ~/.claude, so tests never read it.
         self.claude = claude if claude is not None else ClaudeMonitor(None)
+        self.weather = WeatherReader(config.user_agent)
+        self.weather.set_location(self.settings.weather)
         # The countdown the "done!" screen is showing, and until when.
         self._done: dict | None = None
         self._done_until = 0.0
@@ -536,7 +539,7 @@ class DeskConsole:
     def _clock_frame(self) -> dict:
         now = datetime.now()
         playing = self.now_playing
-        return {
+        frame = {
             "t": "frame",
             "mode": "clock",
             "time": now.strftime("%H:%M"),
@@ -546,6 +549,10 @@ class DeskConsole:
             if playing is not None and playing.is_playing
             else "idle",
         }
+        reading = self.weather.latest()
+        if reading is not None:
+            frame.update(wt=reading["temp"], wi=reading["icon"], wr=reading["rain"])
+        return frame
 
     def _study_frame(self) -> dict:
         view = self.study.view()
@@ -997,6 +1004,7 @@ class DeskConsole:
         if hasattr(self.hardware, "start"):
             self.hardware.start()
         self.claude.start()
+        self.weather.start()
         # Loading the Thai dictionary takes a quarter of a second; do it now,
         # off the loop, rather than as a stall on the first Thai line.
         threading.Thread(target=warm_up_thai, name="thai-warm-up", daemon=True).start()
@@ -1103,6 +1111,10 @@ class DeskConsole:
             "stats": self.stats,
             "study": self._study_snapshot(),
             "claude": self._claude_snapshot(),
+            "weather": {
+                "city": (self.settings.weather or {}).get("city", ""),
+                "now": self.weather.latest(),
+            },
             "lhm": bool(getattr(self.hardware, "lhm_available", False)),
             "busy": self._busy,
             "audio": {

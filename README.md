@@ -474,6 +474,16 @@ already there:
 Both scripts use only Python's standard library, give up after 0.3 s, and
 exit quietly when catsole isn't running, so they never hold Claude up.
 
+## Weather on the clock
+
+Type a city into **weather city** on the panel and press Enter. It is
+looked up on [Open-Meteo](https://open-meteo.com) (free, no account), and
+the clock screen's right-hand column then shows an icon (clear, cloud,
+rain, storm), the temperature and today's chance of rain, refreshed every
+15 minutes. Without a city, or after an hour with no successful update,
+that column shows the board's own numbers as before. Clear the box to turn
+it off.
+
 ## When the PC goes away
 
 There is no RTC and no network, so a disconnected device cannot know the time

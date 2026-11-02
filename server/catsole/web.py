@@ -14,6 +14,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from .app import MODES, STUDY_ACTIONS
+from . import weather as weather_module
 from .hotkeys import format_combo, parse_combo
 
 log = logging.getLogger(__name__)
@@ -121,6 +122,15 @@ def create_app(console) -> Flask:
             s.daily_goal_min = goal
         if "chime" in body:
             s.chime = bool(body["chime"])
+        if "weather_city" in body:
+            city = str(body["weather_city"] or "").strip()
+            place = None
+            if city:
+                place = weather_module.geocode(city, console.config.user_agent)
+                if place is None:
+                    return jsonify({"error": f"city not found: {city}"}), 400
+            s.weather = place
+            console.weather.set_location(place)
         rebind = False
         for key in ("hotkey_menu", "hotkey_pick"):
             if key not in body:

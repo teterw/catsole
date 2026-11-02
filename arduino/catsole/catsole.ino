@@ -181,6 +181,11 @@ struct Frame {
   char r5[8], r7[8];  /* time until each resets: "1h12", "fri" */
   char td[28];      /* today: "214 msgs 3.1M tok" */
 
+  /* weather, on the clock screen */
+  int16_t wt;       /* temperature, C */
+  uint8_t wi;       /* icon: 0 none, 1 clear, 2 cloud, 3 rain, 4 storm */
+  int16_t wr;       /* today's chance of rain in percent, -1 unknown */
+
   float cpuTemp, cpuLoad, cpuClock;
   float gpuTemp, gpuLoad, vramUsed, vramTotal;
   float ramUsed, ramTotal, ramPercent;
@@ -542,6 +547,10 @@ static void handleLine(const char *line) {
   copyField(frame.r5, sizeof(frame.r5), doc["r5"] | "--");
   copyField(frame.r7, sizeof(frame.r7), doc["r7"] | "--");
   copyField(frame.td, sizeof(frame.td), doc["td"] | "");
+
+  frame.wi = doc["wi"] | 0;
+  frame.wt = doc["wt"] | 0;
+  frame.wr = doc["wr"].isNull() ? -1 : doc["wr"].as<int>();
 
   /* Absent sensors arrive as JSON null and must stay absent, not become 0. */
   frame.cpuTemp = doc["cpu"]["temp"].isNull() ? NAN : doc["cpu"]["temp"].as<float>();
@@ -1604,6 +1613,24 @@ static void drawStatRow(uint8_t baseline, const char *label, const char *value,
   }
 }
 
+/* Weather icons, 12x12, the leftmost pixel in bit 11. */
+static const uint16_t WEATHER_ICONS[4][12] = {
+    {0x060, 0x264, 0x108, 0x0F0, 0x1F8, 0xDFB, 0xDFB, 0x1F8, 0x0F0, 0x108, 0x264, 0x060},  /* clear */
+    {0x000, 0x000, 0x0E0, 0x110, 0x60C, 0x802, 0x801, 0x801, 0x7FE, 0x000, 0x000, 0x000},  /* cloud */
+    {0x0E0, 0x110, 0x60C, 0x802, 0x801, 0x7FE, 0x000, 0x222, 0x444, 0x000, 0x222, 0x444},  /* rain */
+    {0x0E0, 0x110, 0x60C, 0x802, 0x801, 0x71E, 0x080, 0x1C0, 0x040, 0x080, 0x100, 0x000},  /* storm */
+};
+
+static void drawWeatherIcon(uint8_t x, uint8_t y, uint8_t icon) {
+  if (icon < 1 || icon > 4) return;
+  const uint16_t *rows = WEATHER_ICONS[icon - 1];
+  for (uint8_t r = 0; r < 12; r++) {
+    for (uint8_t c = 0; c < 12; c++) {
+      if (rows[r] & (1 << (11 - c))) u8g2.drawPixel(x + c, y + r);
+    }
+  }
+}
+
 /* Clock screen.
  *
  * The board has no RTC, so this is only meaningful while the PC is
@@ -1611,6 +1638,7 @@ static void drawStatRow(uint8_t baseline, const char *label, const char *value,
  * rather than a timestamp the device would have to keep running itself.
  * When the link goes stale the whole frame dims like any other screen,
  * which is the honest thing to show: a clock that might be wrong. */
+
 static void drawClock() {
   if (frame.timeText[0] == 0) return;
 
@@ -1635,6 +1663,20 @@ static void drawClock() {
   char info[20];
   u8g2.setFont(u8g2_font_4x6_tf);
   u8g2.drawVLine(82, 28, 30);
+
+  /* The weather, once a city is set; the board's own numbers otherwise. */
+  if (frame.wi > 0) {
+    drawWeatherIcon(86, 28, frame.wi);
+    u8g2.setFont(u8g2_font_5x7_tf);
+    snprintf(info, sizeof(info), "%dC", frame.wt);
+    u8g2.drawUTF8(101, 37, info);
+    if (frame.wr >= 0) {
+      u8g2.setFont(u8g2_font_4x6_tf);
+      snprintf(info, sizeof(info), "rain %d%%", frame.wr);
+      u8g2.drawUTF8(86, 50, info);
+    }
+    return;
+  }
 
   snprintf(info, sizeof(info), "mcu %d%%", mcuLoad);
   u8g2.drawUTF8(86, 34, info);
