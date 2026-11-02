@@ -53,6 +53,22 @@ function Remove-Tree([string]$path) {
 }
 function Note([string]$text) { Write-Host "    $text" }
 
+# The study log and the panel's settings live in the same folder as the
+# app; uninstalling removes everything else and leaves those.
+$KeepOnUninstall = @('study.csv', 'study_state.json', 'settings.json')
+
+function Remove-CatsoleDir([string]$path, [string[]]$keep) {
+    if (-not (Test-Path -LiteralPath $path)) { return @() }
+    $kept = @()
+    foreach ($child in Get-ChildItem -LiteralPath $path -Force) {
+        if ($keep -contains $child.Name) { $kept += $child.Name; continue }
+        if ($child.PSIsContainer) { Remove-Tree $child.FullName }
+        else { Remove-Item -LiteralPath $child.FullName -Force }
+    }
+    if (-not $kept) { Remove-Tree $path }
+    return $kept
+}
+
 function Stop-Catsole {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($task) { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
@@ -68,9 +84,10 @@ if ($Uninstall) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
-    Remove-Tree $Dir
+    $kept = Remove-CatsoleDir $Dir $KeepOnUninstall
     $shortArd = Join-Path $env:LOCALAPPDATA 'catsole-ard'
     if ($Dir -eq (Join-Path $env:LOCALAPPDATA 'catsole')) { Remove-Tree $shortArd }
+    if ($kept) { Note "Kept your study log and settings in $Dir" }
     Say "Removed. The board keeps its firmware; it just waits for a PC again."
     return
 }
