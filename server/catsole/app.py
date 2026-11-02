@@ -609,6 +609,8 @@ class DeskConsole:
         else:
             frame = self._lyrics_frame()
         self._add_menu(frame)
+        # The cat's mood rides on every frame: 0 sulky .. 3 proud.
+        frame["md"] = studystats.mood(self._study_days(), self._today())
         return frame
 
     def _stats_frame(self) -> dict:

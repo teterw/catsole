@@ -182,6 +182,9 @@ struct Frame {
 
 static Frame frame;
 static uint32_t studyStateMs = 0;  /* when frame.st last changed */
+/* The study streak's mood, sent with every frame: 0 sulky, 1 as usual,
+   2 content, 3 proud. */
+static uint8_t catMood = 1;
 
 /* ---- animation ------------------------------------------------------ */
 static uint32_t lastDrawMs = 0;
@@ -525,6 +528,7 @@ static void handleLine(const char *line) {
     menuCount++;
   }
   menuSel = doc["ms"] | 0;
+  catMood = doc["md"] | 1;
 
   /* Absent sensors arrive as JSON null and must stay absent, not become 0. */
   frame.cpuTemp = doc["cpu"]["temp"].isNull() ? NAN : doc["cpu"]["temp"].as<float>();
@@ -1115,7 +1119,11 @@ static uint8_t catPose(bool playing, bool resting) {
   if ((t % 4300) < 160) return CAT_BLINK;
   if ((t % 7100) < 130) return CAT_BLINK;
   if ((t % 11300) < 900) return CAT_SQUINT;
-  return playing ? CAT_HAPPY : CAT_IDLE;
+  if (playing) return CAT_HAPPY;
+  /* At rest the cat wears the study streak. */
+  if (catMood == 0) return CAT_SULKY;
+  if (catMood >= 3 || (catMood == 2 && (t % 6000) < 2000)) return CAT_HAPPY;
+  return CAT_IDLE;
 }
 
 static void drawEqualizer(bool active) {

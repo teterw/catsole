@@ -293,6 +293,7 @@
     <button data-scene="stats">stats</button>
     <button data-scene="stale">no link</button>
     <button data-scene="poses">poses</button>
+    <button data-scene="moods">moods</button>
     <button data-scene="study">study</button>
     <button data-scene="study up">study up</button>
     <button data-scene="paused">paused</button>
@@ -1094,13 +1095,28 @@
     lx.fillRect(0, 0, 128, 64);
   }
 
-  function labPose(playing, resting) {
+  // At rest the cat wears the study streak's mood (0 sulky .. 3 proud).
+  function labPose(playing, resting, mood) {
     if (resting) return 3;
+    if (mood === undefined) mood = state && state.frame && state.frame.md !== undefined ? state.frame.md : 1;
     var t = Date.now();
     if ((t % 4300) < 160) return 1;
     if ((t % 7100) < 130) return 1;
     if ((t % 11300) < 900) return 4;
-    return playing ? 2 : 0;
+    if (playing) return 2;
+    if (mood === 0) return 7;
+    if (mood >= 3 || (mood === 2 && (t % 6000) < 2000)) return 2;
+    return 0;
+  }
+
+  function sceneMoods() {
+    ["sulky", "as usual", "content", "proud"].forEach(function (name, mood) {
+      var col = mood * 32 + 2;
+      drawCatArt(CAT[labPose(false, false, mood)], col, 26, 6, 7, null, 4);
+      lx.fillStyle = PHOSPHOR;
+      lx.font = mono(5);
+      lx.fillText(name, col + 1, 46);
+    });
   }
 
   // Replays the firmware's boot sequence on the same timeline.
@@ -1190,6 +1206,7 @@
     if (scene === "boot") sceneBoot(t % 3400);
     else if (scene === "idle") sceneIdle();
     else if (scene === "poses") scenePoses();
+    else if (scene === "moods") sceneMoods();
     else if (["study", "study up", "paused", "ask", "done"].indexOf(scene) >= 0) sceneStudy(t, scene);
     else if (scene === "menu") {
       sceneStudy(t, "study");
