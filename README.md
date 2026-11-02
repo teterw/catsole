@@ -419,6 +419,27 @@ Rows are only ever added, so fixing one by hand is safe while catsole runs.
 If Excel has the file open (it locks it), finished sessions wait and are
 written once it is closed; the panel says so meanwhile.
 
+### Shortcuts
+
+The board has no buttons, so two keyboard shortcuts stand in for them
+(Windows only):
+
+| keys | does |
+|---|---|
+| **Ctrl+F11** | opens a menu on the OLED; press again to move down it |
+| **Ctrl+F12** | picks the highlighted item; with no menu open, answers "still studying?" |
+
+With no session running the menu offers your last three subjects, each
+with the timer you last used for it; during a session it offers pause or
+resume, +5 min, and stop. It closes by itself after 6 seconds. A new
+subject still needs the panel.
+
+Change the keys on the panel: click a box and press the combo. A shortcut
+takes its keys from every program, including shortcuts that live inside an
+app (Ctrl+F11 is Code::Blocks' Rebuild, Ctrl+F12 VS Code's Go to
+Implementations), which Windows can't warn about. If another program has
+already claimed a combo the panel says it is taken.
+
 ## When the PC goes away
 
 There is no RTC and no network, so a disconnected device cannot know the time

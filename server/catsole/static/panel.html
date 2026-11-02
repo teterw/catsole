@@ -173,6 +173,7 @@
   .small { font-size: 12px; }
   .warn { color: var(--amber); }
   .study label { cursor: pointer; }
+  .field.keybox { flex: 0 0 120px; min-width: 0; width: 120px; cursor: pointer; }
 
   @media (max-width: 420px) {
     dl { grid-template-columns: 76px 1fr; }
@@ -256,6 +257,18 @@
       <span>min</span>
       <label><input type="checkbox" id="s-chime"> chime when time's up</label>
     </div>
+
+    <div class="srow muted small">
+      <span>shortcuts</span>
+      <input id="s-key-menu" class="field keybox" readonly aria-label="menu shortcut: click, then press the keys">
+      <span>menu / next</span>
+      <input id="s-key-pick" class="field keybox" readonly aria-label="pick shortcut: click, then press the keys">
+      <span>pick</span>
+      <span class="warn" id="s-key-status"></span>
+    </div>
+    <p class="muted small" style="margin:0">Click a box and press the keys to change it.
+      Shortcuts inside apps (VS Code, Code::Blocks&hellip;) can't be detected, so a combo
+      set here now belongs to catsole.</p>
   </section>
 
   <dl>
@@ -285,6 +298,7 @@
     <button data-scene="paused">paused</button>
     <button data-scene="ask">ask</button>
     <button data-scene="done">done</button>
+    <button data-scene="menu">menu</button>
   </div>
 
   <div class="screen">
@@ -566,6 +580,8 @@
       drawLyrics(state.frame, state.audio && state.audio.levels);
     }
 
+    if (state && state.frame) drawMenu(ctx, state.frame);
+
     if (state && Date.now() - lastOk > 5000) drawStale();
 
     requestAnimationFrame(render);
@@ -753,6 +769,20 @@
       showMessage("", false);
     }
 
+    var keys = st.hotkeys || {};
+    ["menu", "pick"].forEach(function (name) {
+      var box = document.getElementById("s-key-" + name);
+      if (document.activeElement !== box) box.value = keys[name] || "";
+    });
+    var status = keys.status || {};
+    var problems = [];
+    ["menu", "pick"].forEach(function (name) {
+      if (status[name] === "taken") problems.push(keys[name] + " is taken by another program");
+      if (status[name] === "invalid") problems.push(keys[name] + " is not a key catsole can use");
+    });
+    if (status.menu === "unsupported") problems.push("shortcuts work only on Windows");
+    if (!study.keyError) document.getElementById("s-key-status").textContent = problems.join("; ");
+
     var goal = document.getElementById("s-goal");
     if (document.activeElement !== goal) goal.value = st.goal_min;
     document.getElementById("s-chime").checked = !!st.chime;
@@ -818,6 +848,44 @@
       if (v >= 5 && v <= 1440) post("/api/settings", { daily_goal_min: v });
     }, 600);
   });
+  // A combo from a key press. The physical key (e.code), not the character,
+  // so a Thai layout still gives "ctrl+f11".
+  function comboFrom(e) {
+    var code = e.code || "", key = "";
+    if (/^Key[A-Z]$/.test(code)) key = code.slice(3).toLowerCase();
+    else if (/^Digit[0-9]$/.test(code)) key = code.slice(5);
+    else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) key = code.toLowerCase();
+    else if (/^Numpad[0-9]$/.test(code)) key = "numpad" + code.slice(6);
+    else key = ({ Pause: "pause", ScrollLock: "scrolllock", Home: "home", End: "end",
+                  Insert: "insert", Delete: "delete", PageUp: "pageup", PageDown: "pagedown" })[code] || "";
+    if (!key) return "";
+    var mods = [];
+    if (e.ctrlKey) mods.push("ctrl");
+    if (e.altKey) mods.push("alt");
+    if (e.shiftKey) mods.push("shift");
+    if (e.metaKey) mods.push("win");
+    return mods.concat([key]).join("+");
+  }
+
+  ["menu", "pick"].forEach(function (name) {
+    var box = document.getElementById("s-key-" + name);
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "Tab") return;
+      e.preventDefault();
+      var combo = comboFrom(e);
+      if (!combo) return;
+      box.value = combo;
+      var body = {};
+      body["hotkey_" + name] = combo;
+      post("/api/settings", body).then(function (r) {
+        study.keyError = !!r.error;
+        document.getElementById("s-key-status").textContent = r.error || "";
+        box.blur();
+        poll();
+      });
+    });
+  });
+
   document.getElementById("s-chime").addEventListener("change", function (e) {
     post("/api/settings", { chime: e.target.checked });
   });
@@ -952,6 +1020,26 @@
       }
     }
     drawPawTrail(c, frame);
+  }
+
+  // ---- the shortcut menu, mirroring drawMenu() ------------------------
+
+  function drawMenu(c, frame) {
+    var items = frame.mi || [];
+    if (!items.length) return;
+    var rowH = 12, h = items.length * rowH + 4, top = Math.floor((H - h) / 2);
+    c.fillStyle = GLASS; c.fillRect(12, top - 2, 104, h + 4);
+    c.strokeStyle = PHOSPHOR; c.lineWidth = 1; c.strokeRect(14.5, top + 0.5, 99, h - 1);
+    c.font = mono(10);
+    for (var i = 0; i < items.length; i++) {
+      var y = top + 2 + i * rowH;
+      var sel = i === frame.ms;
+      if (sel) { c.fillStyle = PHOSPHOR; c.fillRect(16, y, 96, rowH); }
+      c.fillStyle = sel ? GLASS : PHOSPHOR;
+      // The board draws a Thai item from a picture; the preview can just
+      // write it, so an empty label here is shown as such.
+      c.fillText(items[i] || "\u2026", 19, y + 10);
+    }
   }
 
   // ---- lab: preview scenes and animations -----------------------------
@@ -1103,6 +1191,10 @@
     else if (scene === "idle") sceneIdle();
     else if (scene === "poses") scenePoses();
     else if (["study", "study up", "paused", "ask", "done"].indexOf(scene) >= 0) sceneStudy(t, scene);
+    else if (scene === "menu") {
+      sceneStudy(t, "study");
+      drawMenu(lx, { mi: ["pause", "+5 min", "stop", "close"], ms: Math.floor(t / 1200) % 4 });
+    }
     else if (scene === "clock") {
       var n = new Date();
       drawClockScreen(lx, {

@@ -279,6 +279,17 @@ static uint8_t metaBmp[(META_BMP_MAX_W / 8) * META_BMP_H];
 static uint16_t metaBmpW = 0;
 static int16_t metaBmpId = -1;
 
+/* The shortcut menu, drawn over whatever screen is up. The PC sends its
+   items with every frame while it is open; an item the board can't draw
+   (Thai) comes empty, with its picture sent separately. */
+static const uint8_t MENU_MAX = 4;
+static const uint8_t ITEM_BMP_MAX_W = 104;
+static char menuItems[MENU_MAX][20];
+static uint8_t menuCount = 0;
+static uint8_t menuSel = 0;
+static uint8_t itemBmp[MENU_MAX][(ITEM_BMP_MAX_W / 8) * META_BMP_H];
+static uint8_t itemBmpW[MENU_MAX];
+
 static uint8_t hexNibble(char c) {
   if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
   if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
@@ -441,6 +452,23 @@ static void handleLine(const char *line) {
     return;
   }
 
+  if (strcmp(type, "ibmp") == 0) {
+    uint8_t i = doc["i"] | 255;
+    uint16_t w = doc["w"] | 0;
+    uint8_t h = doc["h"] | 0;
+    const char *hex = doc["d"] | "";
+    uint16_t bytes = (uint16_t)((w + 7) / 8) * h;
+    if (i >= MENU_MAX || h != META_BMP_H || w == 0 || w > ITEM_BMP_MAX_W ||
+        strlen(hex) != (size_t)bytes * 2) {
+      return;
+    }
+    for (uint16_t k = 0; k < bytes; k++) {
+      itemBmp[i][k] = (uint8_t)((hexNibble(hex[2 * k]) << 4) | hexNibble(hex[2 * k + 1]));
+    }
+    itemBmpW[i] = (uint8_t)w;
+    return;
+  }
+
   if (strcmp(type, "frame") != 0) return;
 
   copyField(frame.mode, sizeof(frame.mode), doc["mode"] | "lyrics");
@@ -488,6 +516,15 @@ static void handleLine(const char *line) {
   frame.wig = doc["wig"] | 0;
   copyField(frame.l1, sizeof(frame.l1), doc["l1"] | "");
   copyField(frame.l2, sizeof(frame.l2), doc["l2"] | "");
+
+  /* No items means the menu is shut. */
+  menuCount = 0;
+  for (JsonVariant item : doc["mi"].as<JsonArray>()) {
+    if (menuCount >= MENU_MAX) break;
+    copyField(menuItems[menuCount], sizeof(menuItems[0]), item.as<const char *>());
+    menuCount++;
+  }
+  menuSel = doc["ms"] | 0;
 
   /* Absent sensors arrive as JSON null and must stay absent, not become 0. */
   frame.cpuTemp = doc["cpu"]["temp"].isNull() ? NAN : doc["cpu"]["temp"].as<float>();
@@ -1797,6 +1834,45 @@ static void drawStudy() {
   drawPawTrail();
 }
 
+/* ---- the shortcut menu ------------------------------------------------ */
+
+static void blitItem(uint8_t i, uint8_t x0, uint8_t y0, uint8_t right) {
+  uint16_t perRow = (itemBmpW[i] + 7) / 8;
+  for (uint8_t y = 0; y < META_BMP_H; y++) {
+    for (uint16_t c = 0; c < itemBmpW[i]; c++) {
+      if (x0 + c >= right) break;
+      if (itemBmp[i][y * perRow + (c >> 3)] & (1 << (c & 7))) u8g2.drawPixel(x0 + c, y0 + y);
+    }
+  }
+}
+
+/* A boxed list in the middle of the screen, the choice inverted the way
+   the panel's buttons show a pressed one. */
+static void drawMenu() {
+  if (menuCount == 0) return;
+  const uint8_t rowH = 12;
+  uint8_t h = menuCount * rowH + 4;
+  uint8_t top = (SCREEN_H - h) / 2;
+  u8g2.setDrawColor(0);
+  u8g2.drawBox(12, top - 2, 104, h + 4);
+  u8g2.setDrawColor(1);
+  u8g2.drawFrame(14, top, 100, h);
+  u8g2.setFont(u8g2_font_6x12_tf);
+  for (uint8_t i = 0; i < menuCount; i++) {
+    uint8_t y = top + 2 + i * rowH;
+    if (i == menuSel) {
+      u8g2.drawBox(16, y, 96, rowH);
+      u8g2.setDrawColor(0);
+    }
+    if (menuItems[i][0]) {
+      u8g2.drawUTF8(19, y + 10, menuItems[i]);
+    } else if (itemBmpW[i]) {
+      blitItem(i, 19, y + 1, 111);
+    }
+    u8g2.setDrawColor(1);
+  }
+}
+
 static void drawNightClock() {
   RTCTime now;
   if (!RTC.getTime(now)) return;
@@ -1861,6 +1937,7 @@ static void render() {
       else if (strcmp(frame.mode, "clock") == 0) drawClock();
       else if (strcmp(frame.mode, "study") == 0) drawStudy();
       else drawLyrics();
+      drawMenu();
       break;
   }
 

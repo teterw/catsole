@@ -62,6 +62,14 @@ def test_summary_with_mangled_log(client, tmp_path):
     assert client.get("/api/study/summary").json["total_min"] == 30
 
 
+def test_settings_hotkeys(client, console):
+    r = client.post("/api/settings", json={"hotkey_menu": "Shift+Ctrl+F9"})
+    assert r.status_code == 200 and console.settings.hotkey_menu == "ctrl+shift+f9"
+    assert "hotkeys" in r.json
+    assert client.post("/api/settings", json={"hotkey_pick": "q"}).status_code == 400
+    assert client.post("/api/settings", json={"hotkey_pick": "ctrl+shift+f9"}).status_code == 400
+
+
 def test_settings_endpoint(client, console):
     r = client.post("/api/settings", json={"daily_goal_min": 90, "chime": False})
     assert r.status_code == 200 and r.json["settings"]["daily_goal_min"] == 90

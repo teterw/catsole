@@ -22,9 +22,11 @@ from . import chime as chime_module
 from . import studystats
 from .audio import AudioLevels
 from .config import Config
+from .hotkeys import Hotkeys
 from .hardware import HardwareReader, empty_stats
 from .link import NullLink, SerialLink
 from .lyrics import Lyrics, LyricsProvider, select_line
+from .menu import StudyMenu, build_items
 from .media import (
     MediaReader,
     NowPlaying,
@@ -72,6 +74,20 @@ TITLE_BITMAP_RESEND_S = 4.0
 DONE_HOLD_S = 7.0
 
 STUDY_ACTIONS = ("pause", "resume", "add5", "stop", "yes")
+
+# Menu items the board can't draw (Thai) go as bitmaps, cut to the menu's
+# width, and are resent while the menu is up in case one was lost.
+ITEM_BITMAP_MAX_W = 104
+ITEM_BITMAP_RESEND_S = 2.0
+
+
+def _crop_bitmap(width: int, data: bytes, max_width: int) -> tuple[int, bytes]:
+    """Cut a row-major, LSB-first bitmap down to max_width columns."""
+    if width <= max_width:
+        return width, data
+    old, new = (width + 7) // 8, (max_width + 7) // 8
+    rows = len(data) // old
+    return max_width, b"".join(data[r * old:r * old + new] for r in range(rows))
 
 
 def next_mode(current: str) -> str:
@@ -129,6 +145,14 @@ class DeskConsole:
         self._done: dict | None = None
         self._done_until = 0.0
         self._days_cache: tuple = (None, {})
+
+        # The shortcut menu. The hotkey thread presses it, so it has a lock.
+        self.menu = StudyMenu()
+        self._menu_lock = threading.RLock()
+        self._menu_bmp_key = None
+        self._menu_bmp_sent = 0.0
+        self.hotkeys: Hotkeys | None = None
+        self.hotkey_status: dict = {}
 
         # Seeded a full interval out, so the configured start mode is
         # actually shown rather than rotated past on the first tick.
@@ -239,6 +263,70 @@ class DeskConsole:
 
     def save_settings(self) -> None:
         self.settings.save(self.settings_path)
+
+    # ---- shortcuts and the menu --------------------------------------------
+
+    def start_hotkeys(self) -> None:
+        self.hotkeys = Hotkeys(self.menu_press)
+        self.hotkeys.start()
+        self.rebind_hotkeys()
+
+    def rebind_hotkeys(self) -> dict:
+        if self.hotkeys is not None:
+            self.hotkey_status = self.hotkeys.bind({
+                "menu": self.settings.hotkey_menu,
+                "pick": self.settings.hotkey_pick,
+            })
+        return self.hotkey_status
+
+    def menu_press(self, name: str) -> None:
+        with self._menu_lock:
+            view = self.study.view()
+            if name == "menu":
+                self.menu.press_next(build_items(view, self.settings.recent))
+                self.push_frame()
+                return
+            if name != "pick":
+                return
+            if not self.menu.visible():
+                # With the menu shut, pick answers "still studying?".
+                if view is not None and view["state"] == "asking":
+                    self.study_control("yes")
+                return
+            item = self.menu.press_pick()
+            if item is None or item.action == "close":
+                self.push_frame()
+            elif item.action == "start":
+                if not self.study_start(item.subject, item.timer, item.minutes):
+                    self.push_frame()
+            elif not self.study_control(item.action):
+                self.push_frame()
+
+    def _add_menu(self, frame: dict) -> None:
+        if not self.menu.visible():
+            return
+        frame["mi"] = ["" if needs_bitmap(i.label) else i.label for i in self.menu.items]
+        frame["ms"] = self.menu.sel
+
+    def _send_menu_bitmaps(self) -> None:
+        if not self.menu.visible():
+            self._menu_bmp_key = None
+            return
+        labels = tuple(i.label for i in self.menu.items)
+        now = time.monotonic()
+        if labels == self._menu_bmp_key and now - self._menu_bmp_sent < ITEM_BITMAP_RESEND_S:
+            return
+        for index, label in enumerate(labels):
+            if not needs_bitmap(label):
+                continue
+            rendered = render_title(label)
+            if rendered is None:
+                continue
+            width, data = _crop_bitmap(*rendered, ITEM_BITMAP_MAX_W)
+            self.link.send({"t": "ibmp", "i": index, "w": width,
+                            "h": TITLE_BITMAP_HEIGHT, "d": data.hex()})
+        self._menu_bmp_key = labels
+        self._menu_bmp_sent = now
 
     def _today(self) -> date:
         """Today by the study clock, which is the wall clock outside tests."""
@@ -502,12 +590,15 @@ class DeskConsole:
 
     def build_frame(self) -> dict:
         if self._study_showing():
-            return self._study_frame()
-        if self.mode == "clock":
-            return self._clock_frame()
-        if self.mode == "stats":
-            return self._stats_frame()
-        return self._lyrics_frame()
+            frame = self._study_frame()
+        elif self.mode == "clock":
+            frame = self._clock_frame()
+        elif self.mode == "stats":
+            frame = self._stats_frame()
+        else:
+            frame = self._lyrics_frame()
+        self._add_menu(frame)
+        return frame
 
     def _stats_frame(self) -> dict:
         cpu = self.stats.get("cpu", {})
@@ -661,6 +752,7 @@ class DeskConsole:
     def push_frame(self) -> None:
         frame = self.build_frame()
         self._attach_title_bitmap(frame)
+        self._send_menu_bitmaps()
         self.link.send(frame)
         self._next_frame = time.monotonic() + self.config.frame_interval_s
 
@@ -901,6 +993,11 @@ class DeskConsole:
             "pending": self.study.pending_count,
             "save_error": self.study.save_error,
             "chime": self.settings.chime,
+            "hotkeys": {
+                "menu": self.settings.hotkey_menu,
+                "pick": self.settings.hotkey_pick,
+                "status": self.hotkey_status,
+            },
         }
 
     def snapshot(self) -> dict:

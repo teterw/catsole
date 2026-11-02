@@ -14,6 +14,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from .app import MODES, STUDY_ACTIONS
+from .hotkeys import format_combo, parse_combo
 
 log = logging.getLogger(__name__)
 
@@ -106,8 +107,22 @@ def create_app(console) -> Flask:
             s.daily_goal_min = goal
         if "chime" in body:
             s.chime = bool(body["chime"])
+        rebind = False
+        for key in ("hotkey_menu", "hotkey_pick"):
+            if key not in body:
+                continue
+            try:
+                combo = format_combo(*parse_combo(str(body[key])))
+            except ValueError:
+                return jsonify({"error": "not a key catsole can use"}), 400
+            other = s.hotkey_pick if key == "hotkey_menu" else s.hotkey_menu
+            if combo == other:
+                return jsonify({"error": "the two shortcuts must differ"}), 400
+            setattr(s, key, combo)
+            rebind = True
         console.save_settings()
-        return jsonify({"settings": asdict(s)})
+        status = console.rebind_hotkeys() if rebind else console.hotkey_status
+        return jsonify({"settings": asdict(s), "hotkeys": status})
 
     return app
 

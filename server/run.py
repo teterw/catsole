@@ -105,6 +105,11 @@ def main(argv=None) -> int:
         console.stop()
         return 0
 
+    # Shortcuts belong to the copy driving the board; a --no-serial copy
+    # alongside it would only find them taken.
+    if not args.no_serial:
+        console.start_hotkeys()
+
     if not args.no_web:
         from catsole.web import serve
 
