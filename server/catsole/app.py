@@ -33,6 +33,7 @@ from .media import (
     facebook_post,
     image_size,
     instagram_post,
+    is_distraction,
     is_music,
     is_youtube_video,
     netflix_kind,
@@ -125,6 +126,9 @@ class DeskConsole:
 
         self.mode = config.start_mode if config.start_mode in MODES else MODES[0]
         self.now_playing: NowPlaying | None = None
+        # The session as polled, before the filters that keep reels and
+        # trailers off the lyrics screen: those still count as distractions.
+        self._raw_media: NowPlaying | None = None
         self.stats: dict = empty_stats()
         self.lyrics = Lyrics(kind="none")
         self.refresh_requested = False
@@ -339,6 +343,12 @@ class DeskConsole:
             self._days_cache = (key, studystats.daily_minutes(self.study.log.read()))
         return self._days_cache[1]
 
+    def _distracted(self) -> bool:
+        raw = self._raw_media
+        # The artwork read belongs to the track on the lyrics screen.
+        same = raw is not None and raw.track_key == self._track_key
+        return is_distraction(raw, self._artwork if same else None)
+
     def _study_showing(self) -> bool:
         """Whether the study screen holds the display: a session, or the
         "done!" screen just after one."""
@@ -363,6 +373,7 @@ class DeskConsole:
     def _on_media(self, now_playing: NowPlaying | None) -> None:
         """Record the current track, refetching lyrics only on a real change."""
         now = time.monotonic()
+        self._raw_media = now_playing
         shown = self._worth_showing(now_playing)
 
         if self._interrupted(shown, now):
@@ -817,7 +828,7 @@ class DeskConsole:
             self._send_rtc()
             self._next_rtc = now + self.config.rtc_sync_s
 
-        finished = self.study.tick()
+        finished = self.study.tick(distracted=self._distracted())
         if finished is not None:
             self._on_study_finished(finished)
         studying = self._study_showing()
