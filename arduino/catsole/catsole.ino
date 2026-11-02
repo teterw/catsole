@@ -166,12 +166,22 @@ struct Frame {
   uint8_t fanCount;
   uint32_t durMs;   /* track length, 0 when unknown */
 
+  /* study screen */
+  char rt[12];      /* right end of the strip: "25m", "goal 2h", "paused" */
+  uint16_t pg;      /* progress, 0..1000 */
+  char st[6];       /* "run", "pause", "ask" or "done" */
+  uint8_t eye;      /* a video site is on: the cat side-eyes it */
+  uint8_t wig;      /* the last minute: the fish wiggles */
+  char l1[24];
+  char l2[24];
+
   float cpuTemp, cpuLoad, cpuClock;
   float gpuTemp, gpuLoad, vramUsed, vramTotal;
   float ramUsed, ramTotal, ramPercent;
 };
 
 static Frame frame;
+static uint32_t studyStateMs = 0;  /* when frame.st last changed */
 
 /* ---- animation ------------------------------------------------------ */
 static uint32_t lastDrawMs = 0;
@@ -467,6 +477,17 @@ static void handleLine(const char *line) {
   }
   frame.durMs = doc["dur"] | 0UL;
   frame.receivedAtMs = millis();
+
+  char st[sizeof(frame.st)];
+  copyField(st, sizeof(st), doc["st"] | "");
+  if (strcmp(st, frame.st) != 0) studyStateMs = millis();
+  copyField(frame.st, sizeof(frame.st), st);
+  copyField(frame.rt, sizeof(frame.rt), doc["rt"] | "");
+  frame.pg = doc["pg"] | 0;
+  frame.eye = doc["eye"] | 0;
+  frame.wig = doc["wig"] | 0;
+  copyField(frame.l1, sizeof(frame.l1), doc["l1"] | "");
+  copyField(frame.l2, sizeof(frame.l2), doc["l2"] | "");
 
   /* Absent sensors arrive as JSON null and must stay absent, not become 0. */
   frame.cpuTemp = doc["cpu"]["temp"].isNull() ? NAN : doc["cpu"]["temp"].as<float>();
@@ -1011,6 +1032,11 @@ enum CatPose {
   CAT_HAPPY,
   CAT_SLEEP,
   CAT_SQUINT,
+  CAT_STUDY,
+  CAT_SIDEEYE,
+  CAT_SULKY,
+  CAT_CHEER,
+  CAT_WORRIED,
   CAT_POSE_COUNT
 };
 
@@ -1023,6 +1049,11 @@ static const char *const CAT_ART[CAT_POSE_COUNT][2] = {
     {" /\\_/\\ ", "(=^.^=)"},  /* music  */
     {" /\\_/\\ ", "(=u.u=)"},  /* asleep */
     {" /\\_/\\ ", "(=-.o=)"},  /* squint */
+    {" /\\_/\\ ", "(=o-o=)"},  /* study: glasses */
+    {" /\\_/\\ ", "(=>.>=)"},  /* side-eye */
+    {" /\\_/\\ ", "(=-_-=)"},  /* sulky */
+    {" /\\_/\\ ", "(=^o^=)"},  /* cheer */
+    {" /\\_/\\ ", "(=;.;=)"},  /* worried */
 };
 
 static void drawCat(int16_t x, int16_t y, uint8_t pose, const uint8_t *font,
@@ -1652,6 +1683,120 @@ static void drawStats() {
  * difference between a dark panel and a working desk clock. Nothing is
  * static: the digits step to a new position every minute, which is what
  * keeps eight hours of the same glyphs from etching into the display. */
+/* ---- study screen --------------------------------------------------
+ *
+ * Subject along the top, the timer large, the cat in study glasses, and
+ * paw prints walking along the bottom toward a fish: the walk is the
+ * session for a countdown, and the day's goal for a count up. */
+
+static const uint8_t PAW_COUNT = 14;
+static const uint8_t FISH_X = 113;
+static const uint8_t FISH_Y = 52;
+
+/* 9x5, facing left toward the paws. */
+static const uint16_t FISH_ROWS[5] = {
+    0b001110001, 0b011111011, 0b101111110, 0b011111011, 0b001110001,
+};
+
+static void drawPaw(uint8_t x, uint8_t y) {
+  u8g2.drawPixel(x, y);
+  u8g2.drawPixel(x + 2, y - 1);
+  u8g2.drawPixel(x + 4, y);
+  u8g2.drawBox(x + 1, y + 2, 3, 2);
+}
+
+static void drawFish(uint8_t x, uint8_t y) {
+  for (uint8_t r = 0; r < 5; r++) {
+    for (uint8_t c = 0; c < 9; c++) {
+      if (FISH_ROWS[r] & (1 << (8 - c))) u8g2.drawPixel(x + c, y + r);
+    }
+  }
+}
+
+static void drawPawTrail() {
+  uint8_t done = (uint8_t)(((uint32_t)frame.pg * PAW_COUNT) / 1000);
+  bool blinkOn = (millis() / 400) % 2;
+  for (uint8_t i = 0; i < PAW_COUNT; i++) {
+    uint8_t x = 3 + (uint8_t)((i * 77 + 5) / 10);  /* 7.7px a step */
+    uint8_t y = (i % 2) ? 52 : 57;
+    if (i < done || (i == done && blinkOn)) {
+      drawPaw(x, y);
+    } else {
+      u8g2.drawPixel(x + 2, y + 2);  /* a step still to come */
+    }
+  }
+  int8_t wiggle = 0;
+  if (frame.wig) wiggle = ((millis() / 120) % 2) ? -1 : 1;
+  drawFish(FISH_X, FISH_Y + wiggle);
+}
+
+static uint8_t studyCatPose() {
+  if (frame.eye) return CAT_SIDEEYE;
+  uint32_t t = millis();
+  if ((t % 4300) < 160 || (t % 7100) < 130) return CAT_BLINK;
+  return CAT_STUDY;
+}
+
+static void drawStudyStrip() {
+  u8g2.setFont(u8g2_font_5x7_tf);
+  uint16_t rtW = u8g2.getUTF8Width(frame.rt);
+  uint8_t boxW = (uint8_t)(SCREEN_W - 4 - (rtW ? rtW + 6 : 0));
+  bool bitmapTitle = frame.metaBmp >= 0 && frame.metaBmp == metaBmpId && metaBmpW > 0;
+  if (bitmapTitle) {
+    drawTitleBitmap(boxW);
+  } else {
+    drawMarquee(frame.meta, META_BASELINE, boxW);
+  }
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawUTF8(SCREEN_W - 2 - rtW, META_BASELINE, frame.rt);
+  u8g2.drawHLine(0, bitmapTitle ? RULE_Y + 1 : RULE_Y, SCREEN_W);
+}
+
+static void drawStudyDone() {
+  uint32_t since = millis() - studyStateMs;
+  if (since < 1800 && (since / 300) % 2 == 0) {
+    u8g2.drawBox(0, 0, SCREEN_W, SCREEN_H);
+    return;
+  }
+  drawStudyStrip();
+  uint8_t pose = ((millis() / 500) % 2) ? CAT_CHEER : CAT_HAPPY;
+  drawCat(4, 28, pose, u8g2_font_6x12_tf, 12);
+  u8g2.setFont(u8g2_font_helvB10_tf);
+  u8g2.drawUTF8(56, 30, "done!");
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawUTF8(56, 44, frame.l1);
+  u8g2.drawUTF8(56, 56, frame.l2);
+}
+
+static void drawStudy() {
+  if (strcmp(frame.st, "done") == 0) {
+    drawStudyDone();
+    return;
+  }
+  drawStudyStrip();
+  drawCat(99, 30, studyCatPose(), u8g2_font_4x6_tf, 7);
+
+  if (strcmp(frame.st, "ask") == 0) {
+    u8g2.setFont(u8g2_font_6x12_tf);
+    u8g2.drawUTF8(3, 30, frame.l1);
+    u8g2.setFont(u8g2_font_5x7_tf);
+    u8g2.drawUTF8(3, 44, frame.l2);
+    return;
+  }
+
+  bool paused = strcmp(frame.st, "pause") == 0;
+  if (!paused || (millis() / 500) % 2 == 0) {
+    u8g2.setFont(u8g2_font_logisoso24_tn);
+    u8g2.drawUTF8(3, 40, frame.timeText);
+    if (frame.secText[0]) {
+      uint16_t w = u8g2.getUTF8Width(frame.timeText);
+      u8g2.setFont(u8g2_font_5x7_tf);
+      u8g2.drawUTF8(3 + w + 3, 40, frame.secText);
+    }
+  }
+  drawPawTrail();
+}
+
 static void drawNightClock() {
   RTCTime now;
   if (!RTC.getTime(now)) return;
@@ -1714,6 +1859,7 @@ static void render() {
     case LINK_STALE:
       if (strcmp(frame.mode, "stats") == 0) drawStats();
       else if (strcmp(frame.mode, "clock") == 0) drawClock();
+      else if (strcmp(frame.mode, "study") == 0) drawStudy();
       else drawLyrics();
       break;
   }

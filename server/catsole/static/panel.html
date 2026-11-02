@@ -194,6 +194,11 @@
     <button data-scene="stats">stats</button>
     <button data-scene="stale">no link</button>
     <button data-scene="poses">poses</button>
+    <button data-scene="study">study</button>
+    <button data-scene="study up">study up</button>
+    <button data-scene="paused">paused</button>
+    <button data-scene="ask">ask</button>
+    <button data-scene="done">done</button>
   </div>
 
   <div class="screen">
@@ -469,6 +474,8 @@
       drawStats(state.frame);
     } else if (state.frame.mode === "clock") {
       drawClockScreen(ctx, state.frame);
+    } else if (state.frame.mode === "study") {
+      drawStudy(ctx, state.frame);
     } else {
       drawLyrics(state.frame, state.audio && state.audio.levels);
     }
@@ -580,6 +587,97 @@
     c.fillText(frame.date || "", 5, 58);
   }
 
+  // ---- study screen, mirroring drawStudy() ----------------------------
+
+  var PAW_COUNT = 14, FISH_X = 113, FISH_Y = 52;
+  var FISH_ROWS = ["..###...#", ".#####.##", "#.######.", ".#####.##", "..###...#"];
+
+  function drawPaw(c, x, y) {
+    c.fillRect(x, y, 1, 1); c.fillRect(x + 2, y - 1, 1, 1); c.fillRect(x + 4, y, 1, 1);
+    c.fillRect(x + 1, y + 2, 3, 2);
+  }
+
+  function drawPawTrail(c, frame) {
+    var done = Math.floor((frame.pg || 0) * PAW_COUNT / 1000);
+    var blinkOn = Math.floor(Date.now() / 400) % 2 === 1;
+    c.fillStyle = PHOSPHOR;
+    for (var i = 0; i < PAW_COUNT; i++) {
+      var x = 3 + Math.floor((i * 77 + 5) / 10);
+      var y = (i % 2) ? 52 : 57;
+      if (i < done || (i === done && blinkOn)) drawPaw(c, x, y);
+      else c.fillRect(x + 2, y + 2, 1, 1);
+    }
+    var wiggle = frame.wig ? (Math.floor(Date.now() / 120) % 2 ? -1 : 1) : 0;
+    for (var r = 0; r < 5; r++)
+      for (var k = 0; k < 9; k++)
+        if (FISH_ROWS[r][k] === "#") c.fillRect(FISH_X + k, FISH_Y + wiggle + r, 1, 1);
+  }
+
+  function studyCatPose(frame) {
+    if (frame.eye) return 6;
+    var t = Date.now();
+    if ((t % 4300) < 160 || (t % 7100) < 130) return 1;
+    return 5;
+  }
+
+  function drawStudyStrip(c, frame) {
+    c.font = mono(7);
+    c.fillStyle = PHOSPHOR;
+    var rt = frame.rt || "";
+    var rtW = rt.length * 5;
+    var boxW = W - 4 - (rtW ? rtW + 6 : 0);
+    c.save();
+    c.beginPath(); c.rect(0, 0, boxW + 2, 11); c.clip();
+    c.fillText(frame.meta || "", 2, 8);
+    c.restore();
+    c.fillText(rt, W - 2 - rtW, 8);
+    c.fillRect(0, 10, W, 1);
+  }
+
+  function drawStudy(c, frame) {
+    // When the state last changed, for the done screen's flashes.
+    if (c.studySt !== frame.st) { c.studySt = frame.st; c.studyAt = Date.now(); }
+
+    if (frame.st === "done") {
+      var since = Date.now() - c.studyAt;
+      if (since < 1800 && Math.floor(since / 300) % 2 === 0) {
+        c.fillStyle = PHOSPHOR; c.fillRect(0, 0, W, H);
+        return;
+      }
+      drawStudyStrip(c, frame);
+      drawCatArt(CAT[Math.floor(Date.now() / 500) % 2 ? 8 : 2], 4, 28, 10, 12, c, 6);
+      c.fillStyle = PHOSPHOR;
+      c.font = "bold 11px " + getComputedStyle(document.body).fontFamily;
+      c.fillText("done!", 56, 30);
+      c.font = mono(7);
+      c.fillText(frame.l1 || "", 56, 44);
+      c.fillText(frame.l2 || "", 56, 56);
+      return;
+    }
+
+    drawStudyStrip(c, frame);
+    drawCatArt(CAT[studyCatPose(frame)], 99, 30, 6, 7, c, 4);
+    c.fillStyle = PHOSPHOR;
+
+    if (frame.st === "ask") {
+      c.font = mono(10); c.fillText(frame.l1 || "", 3, 30);
+      c.font = mono(7); c.fillText(frame.l2 || "", 3, 44);
+      return;
+    }
+
+    var paused = frame.st === "pause";
+    if (!paused || Math.floor(Date.now() / 500) % 2 === 0) {
+      c.font = "24px " + getComputedStyle(document.body).fontFamily;
+      c.fillText(frame.time || "", 3, 40);
+      if (frame.sec) {
+        var w = c.measureText(frame.time || "").width;
+        c.font = mono(7);
+        c.fillText(frame.sec, 3 + w + 3, 40);
+      }
+    }
+    drawPawTrail(c, frame);
+  }
+
   // ---- lab: preview scenes and animations -----------------------------
 
   var labCanvas = document.getElementById("lab");
@@ -594,9 +692,15 @@
     [" /\\_/\\ ", "(=-.-=)"],
     [" /\\_/\\ ", "(=^.^=)"],
     [" /\\_/\\ ", "(=u.u=)"],
-    [" /\\_/\\ ", "(=-.o=)"]
+    [" /\\_/\\ ", "(=-.o=)"],
+    [" /\\_/\\ ", "(=o-o=)"],
+    [" /\\_/\\ ", "(=>.>=)"],
+    [" /\\_/\\ ", "(=-_-=)"],
+    [" /\\_/\\ ", "(=^o^=)"],
+    [" /\\_/\\ ", "(=;.;=)"]
   ];
-  var POSE_NAMES = ["idle", "blink", "music", "asleep", "squint"];
+  var POSE_NAMES = ["idle", "blink", "music", "asleep", "squint",
+                    "study", "side-eye", "sulky", "cheer", "worried"];
 
   // Boot art candidates. B and C are originals drawn with open contours.
   var BOOT_ART = [CAT[0]];
@@ -680,14 +784,40 @@
   }
 
   function scenePoses() {
-    lx.font = mono(7);
+    // Four to a row at the size the cat perches at on the lyrics screen.
     for (var i = 0; i < CAT.length; i++) {
-      var col = (i % 3) * 43 + 2, row = Math.floor(i / 3) * 32;
-      drawCatArt(CAT[i], col, row + 10, 7, 8, null, 5);
+      var col = (i % 4) * 32 + 2, row = Math.floor(i / 4) * 21;
+      drawCatArt(CAT[i], col, row + 6, 6, 7, null, 4);
       lx.fillStyle = PHOSPHOR;
-      lx.font = mono(6);
-      lx.fillText(POSE_NAMES[i], col + 2, row + 30);
+      lx.font = mono(5);
+      lx.fillText(POSE_NAMES[i], col + 1, row + 19);
     }
+  }
+
+  // A session walking its paws toward the fish over 20 seconds.
+  function sceneStudy(t, kind) {
+    var f = { mode: "study", meta: "math", rt: "25m", time: "", sec: "", pg: 0,
+              st: "run", eye: 0, wig: 0, l1: "", l2: "" };
+    var cycle = (t % 20000) / 20000;
+    if (kind === "study") {
+      var left = Math.ceil(25 * 60 * (1 - cycle));
+      f.time = ("0" + Math.floor(left / 60)).slice(-2) + ":" + ("0" + left % 60).slice(-2);
+      f.pg = Math.floor(cycle * 1000);
+      f.wig = cycle > 0.9 ? 1 : 0;
+      f.eye = (t % 20000) > 6000 && (t % 20000) < 9000 ? 1 : 0;
+    } else if (kind === "study up") {
+      f.rt = "goal 2h"; f.time = "1:12"; f.sec = ("0" + Math.floor(t / 1000) % 60).slice(-2);
+      f.pg = 600;
+    } else if (kind === "paused") {
+      f.rt = "paused"; f.time = "18:42"; f.pg = 253; f.st = "pause";
+    } else if (kind === "ask") {
+      f.rt = "still?"; f.st = "ask"; f.pg = 1000;
+      f.l1 = "still studying?"; f.l2 = "ctrl+f12 = yes";
+    } else if (kind === "done") {
+      f.st = "done"; f.pg = 1000; f.l1 = "25 min"; f.l2 = "streak 7d";
+      if (t % 7000 < 30) lx.studySt = null;   // replay the flashes
+    }
+    drawStudy(lx, f);
   }
 
   function labRender() {
@@ -696,6 +826,7 @@
     if (scene === "boot") sceneBoot(t % 3400);
     else if (scene === "idle") sceneIdle();
     else if (scene === "poses") scenePoses();
+    else if (["study", "study up", "paused", "ask", "done"].indexOf(scene) >= 0) sceneStudy(t, scene);
     else if (scene === "clock") {
       var n = new Date();
       drawClockScreen(lx, {
